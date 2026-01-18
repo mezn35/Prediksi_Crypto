@@ -2,22 +2,23 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import ccxt
+import yfinance as yf
 from ta.volatility import BollingerBands
 from ta.momentum import RSIIndicator, StochasticOscillator
 from datetime import timedelta
 import random
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(page_title="REAL-TIME SNIPER", layout="wide")
-st.title("⚡ REAL-TIME SNIPER: Eksekusi Cepat")
+st.set_page_config(page_title="SNIPER HYBRID", layout="wide")
+st.title("🎯 SNIPER HYBRID: Real-Time + Backup")
 st.markdown("""
-**Mode Akurasi Tinggi:**
-* 📡 **Data Source:** Langsung dari Binance (Induk Tokocrypto).
-* ⏱️ **Zero Delay:** Tidak ada Yahoo Finance. Jika data tidak realtime, koin di-skip.
-* 🎯 **Sinyal:** Fokus pada titik masuk (Entry) dan keluar (Exit).
+**Sistem Cerdas:**
+* 🥇 **Coba Binance Dulu:** Untuk data Real-Time akurat.
+* 🥈 **Backup Yahoo:** Jika koin tidak ada di Binance, pakai data Yahoo (Delay 15m) agar tetap ada sinyal.
+* 📝 **Live Log:** Anda bisa lihat koin apa saja yang sedang dicek.
 """)
 
-# --- DATABASE KOIN LENGKAP (DARI ANDA) ---
+# --- DATABASE KOIN LENGKAP ---
 WATCHLIST = [
     # --- USDT PAIRS ---
     "HEI/USDT", "KOM/USDT", "BROCCOLI714/USDT", "PENGU/USDT", "BIO/USDT", "VANA/USDT", 
@@ -106,95 +107,91 @@ with st.sidebar:
     target_profit_pct = st.slider("Target Profit (%)", 1.0, 10.0, 2.5)
     stop_loss_pct = st.slider("Stop Loss (%)", 0.5, 5.0, 1.5)
     kurs_usd_idr = st.number_input("Kurs USD/IDR", value=16100)
-    st.info("Hanya menampilkan koin yang datanya REAL-TIME di server Binance. Koin lokal/micin yang tidak ada di server global akan otomatis disembunyikan.")
 
-# --- FUNGSI DATA REAL-TIME (STRICT) ---
-def get_realtime_data(symbol):
+# --- FUNGSI DATA HYBRID (BINANCE -> YAHOO) ---
+def get_hybrid_data(symbol):
+    df = None
+    source = "Unknown"
+    
+    # 1. COBA BINANCE (REAL-TIME)
     try:
-        # LOGIKA KONVERSI IDR -> USDT (Untuk Data Fetching)
-        # Server Global tidak punya IDR, jadi kita pinjam data USDT
         target_symbol = symbol
-        is_idr = False
-        
         if "/IDR" in symbol:
             target_symbol = symbol.replace("/IDR", "/USDT")
-            is_idr = True
         
-        # Mapping khusus untuk kasus beda nama
-        # Misal ALCH di Toko = ACH di Binance
+        # Mapping nama khusus
         if target_symbol == "ALCH/USDT": target_symbol = "ACH/USDT"
         if target_symbol == "JELLYJELLY/USDT": target_symbol = "JELLY/USDT" 
             
-        # Ambil Data (Hanya 50 candle terakhir untuk kecepatan)
         bars = exchange.fetch_ohlcv(target_symbol, timeframe='15m', limit=50)
-        
-        if not bars: return None # Jika kosong, langsung skip
-        
-        df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
-        df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=7) # Convert ke WIB
-        df.set_index('time', inplace=True)
-        
-        return df
-        
-    except Exception as e:
-        return None # Jika error (koin ga ada di binance), return None
+        if bars:
+            df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
+            df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=7)
+            df.set_index('time', inplace=True)
+            source = "⚡ REAL-TIME"
+    except:
+        pass # Lanjut ke backup
+
+    # 2. JIKA GAGAL, COBA YAHOO (BACKUP)
+    if df is None:
+        try:
+            # Format Yahoo: XXX-USD
+            yf_sym = symbol.replace("/", "-").replace("USDT", "USD").replace("IDR", "USD")
+            
+            # Download
+            data_yf = yf.download(yf_sym, period='2d', interval='15m', progress=False)
+            if len(data_yf) > 10:
+                if isinstance(data_yf.columns, pd.MultiIndex): data_yf.columns = data_yf.columns.droplevel(1)
+                df = data_yf[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+                df.columns = ['open', 'high', 'low', 'close', 'vol']
+                df.index = df.index + timedelta(hours=7)
+                source = "⚠️ DELAY 15M"
+        except:
+            pass
+            
+    return df, source
 
 # --- ALGORITMA SNIPER ---
 def analyze_coin(symbol):
-    # 1. Ambil Data
-    df = get_realtime_data(symbol)
-    if df is None: return None # SKIP koin hantu
+    df, source = get_hybrid_data(symbol)
+    if df is None: return None # Benar-benar tidak ada data di mana pun
     
-    # 2. Hitung Indikator
+    # Indikator
     close = df['close']
-    
-    # Bollinger Bands
     bb = BollingerBands(close=close, window=20, window_dev=2)
     df['bb_h'] = bb.bollinger_hband()
     df['bb_l'] = bb.bollinger_lband()
-    
-    # RSI
     df['rsi'] = RSIIndicator(close=close, window=14).rsi()
     
-    # Stochastic
-    stoch = StochasticOscillator(high=df['high'], low=df['low'], close=close)
-    df['stoch'] = stoch.stoch()
-    
-    # 3. Tentukan Posisi Terakhir
+    # Posisi Terakhir
     last_price = close.iloc[-1]
     last_rsi = df['rsi'].iloc[-1]
     bb_low = df['bb_l'].iloc[-1]
     bb_high = df['bb_h'].iloc[-1]
     
-    # 4. Logic Sinyal
     signal = "WAIT"
     confidence = 0
     reason = "Sideways"
     
-    # SYARAT BELI:
-    # 1. Harga dekat BB Bawah (Diskon)
-    # 2. RSI < 45 (Murah)
-    if last_price <= (bb_low * 1.015) and last_rsi < 45:
+    # SINYAL BELI: Harga di Bawah BB + RSI Murah
+    if last_price <= (bb_low * 1.02) and last_rsi < 50:
         signal = "BUY NOW"
-        confidence = 85
-        reason = "Harga Diskon (Support BB) + RSI Rendah"
-        if last_rsi < 30: 
-            confidence = 98
+        confidence = 80
+        reason = "Harga Diskon (Support BB)"
+        if last_rsi < 35: 
+            confidence = 95
             reason = "SUPER DISKON (Oversold)"
             
-    # SYARAT JUAL:
-    # 1. Harga dekat BB Atas (Mahal)
-    # 2. RSI > 60 (Overbought dikit)
-    elif last_price >= (bb_high * 0.985) and last_rsi > 60:
+    # SINYAL JUAL
+    elif last_price >= (bb_high * 0.98) and last_rsi > 60:
         signal = "SELL NOW"
-        confidence = 85
-        reason = "Harga Pucuk (Resistance BB) + RSI Mahal"
+        confidence = 80
+        reason = "Harga Pucuk (Resistance BB)"
         
-    # 5. Hitung Harga Rupiah (Estimasi)
+    # Estimasi Rupiah
     price_idr = last_price * kurs_usd_idr
     tp_price = price_idr * (1 + target_profit_pct/100)
     sl_price = price_idr * (1 - stop_loss_pct/100)
-    est_profit = modal_awal * (target_profit_pct/100)
     
     return {
         "ticker": symbol,
@@ -204,63 +201,66 @@ def analyze_coin(symbol):
         "reason": reason,
         "tp": tp_price,
         "sl": sl_price,
-        "profit": est_profit
+        "source": source
     }
 
 # --- TAMPILAN DASHBOARD ---
-st.info("💡 **INFO:** Sistem sekarang hanya memproses koin yang datanya **REAL-TIME**. Jika koin favorit Anda tidak muncul, berarti datanya tidak tersedia di server Global (Binance).")
+st.info("💡 **INFO:** Sistem akan mencoba data Real-Time dulu. Jika tidak ada, baru pakai data Yahoo (Delay).")
 
-if st.button("🚀 SCANNER SNIPER (ACAK 30 KOIN)", type="primary"):
+# TOMBOL SCAN BATCH BESAR
+if st.button("🚀 SCANNER SNIPER (ACAK 50 KOIN)", type="primary"):
     
-    # Ambil sampel acak
-    batch = random.sample(WATCHLIST, 30)
+    # Batch diperbesar jadi 50 biar peluang dapat koin valid lebih besar
+    batch = random.sample(WATCHLIST, 50)
     
     results_buy = []
-    results_sell = []
     
-    # Progress Bar
+    # Area Log untuk melihat proses
+    log_area = st.empty()
     progress = st.progress(0)
-    status = st.empty()
-    valid_count = 0
+    
+    scan_log = []
     
     for i, coin in enumerate(batch):
-        status.caption(f"Mengecek {coin} di Server Realtime...")
+        # Update log visual
+        log_area.text(f"Mengecek {coin}...")
         res = analyze_coin(coin)
         
         if res:
-            valid_count += 1
+            scan_log.append(f"✅ {coin}: {res['source']}")
             if "BUY" in res['signal']: results_buy.append(res)
-            elif "SELL" in res['signal']: results_sell.append(res)
+        else:
+            scan_log.append(f"❌ {coin}: Tidak Ditemukan")
             
-        progress.progress((i+1)/30)
+        progress.progress((i+1)/50)
         
-    status.empty()
+    log_area.empty()
+    progress.empty()
     
-    st.write(f"✅ Selesai Scan. Dari 30 sampel, **{valid_count} koin valid** (ada datanya).")
+    # --- HASIL ---
+    st.subheader(f"Hasil Scan ({len(results_buy)} Sinyal Beli Ditemukan)")
     
-    # --- HASIL SINYAL BELI ---
-    st.subheader("🟢 KESEMPATAN BELI (BUY)")
     if results_buy:
         results_buy.sort(key=lambda x: x['confidence'], reverse=True)
         for item in results_buy:
             with st.container():
-                st.markdown(f"### {item['ticker']} ({item['signal']})")
+                # Badge Sumber Data
+                badge_color = "green" if "REAL" in item['source'] else "orange"
+                st.markdown(f"### {item['ticker']} :{badge_color}[[{item['source']}]]")
+                
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Harga Beli (Est)", f"Rp {item['price_idr']:,.0f}")
                 c2.metric("Jual Di (TP)", f"Rp {item['tp']:,.0f}", f"+{target_profit_pct}%")
                 c3.error(f"Stop Loss: Rp {item['sl']:,.0f}")
+                
                 st.caption(f"Alasan: {item['reason']}")
                 st.divider()
     else:
-        st.warning("Tidak ada sinyal BELI yang kuat di batch ini. Coba klik tombol Scan lagi untuk batch koin lain.")
+        st.warning("Tidak ada sinyal BELI yang kuat di batch ini. Pasar mungkin sedang tinggi.")
 
-    # --- HASIL SINYAL JUAL ---
-    st.subheader("🔴 SAATNYA JUAL (SELL)")
-    if results_sell:
-        for item in results_sell:
-            st.markdown(f"**{item['ticker']}** - Harga: Rp {item['price_idr']:,.0f} | **JUAL** ({item['reason']})")
-    else:
-        st.caption("Tidak ada sinyal jual urgent.")
+    # Tampilkan Log Scanning (Supaya user tau sistem bekerja)
+    with st.expander("Lihat Log Scanning (Apa yang terjadi?)"):
+        st.write(scan_log)
 
 # --- CEK MANUAL ---
 st.sidebar.markdown("---")
@@ -268,18 +268,15 @@ st.sidebar.header("🔍 Cek Koin Tertentu")
 manual_coin = st.sidebar.selectbox("Pilih Koin", WATCHLIST)
 
 if st.sidebar.button("Cek Sinyal Koin Ini"):
-    with st.spinner("Mengambil data Real-Time..."):
+    with st.spinner("Mencari data..."):
         res = analyze_coin(manual_coin)
         if res:
-            if "BUY" in res['signal']:
-                st.sidebar.success(f"REKOMENDASI: {res['signal']}")
-            elif "SELL" in res['signal']:
-                st.sidebar.error(f"REKOMENDASI: {res['signal']}")
-            else:
-                st.sidebar.warning(f"REKOMENDASI: {res['signal']}")
+            color = "green" if "BUY" in res['signal'] else "red" if "SELL" in res['signal'] else "gray"
+            st.sidebar.markdown(f"### :{color}[{res['signal']}]")
+            st.sidebar.caption(f"Sumber: {res['source']}")
             
             st.sidebar.write(f"Harga: Rp {res['price_idr']:,.0f}")
             st.sidebar.write(f"TP: Rp {res['tp']:,.0f}")
-            st.sidebar.caption(res['reason'])
+            st.sidebar.info(res['reason'])
         else:
-            st.sidebar.error("Data koin ini tidak tersedia secara Real-Time.")
+            st.sidebar.error("Data tidak ditemukan di server manapun.")
