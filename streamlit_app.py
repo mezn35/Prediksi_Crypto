@@ -2,6 +2,7 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import ccxt
+import yfinance as yf
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense
@@ -12,17 +13,17 @@ import random
 from datetime import datetime, timedelta
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(page_title="Oracle AI: Ultimate List", layout="wide")
+st.set_page_config(page_title="Oracle AI: Hybrid", layout="wide")
 
-st.title("👁️ ORACLE AI: Ultimate Watchlist (USDT & IDR)")
+st.title("👁️ ORACLE AI: Hybrid Engine (Binance + Yahoo)")
 st.markdown("""
-**Fitur Terbaru:**
-1.  📜 **Custom Watchlist:** Menggunakan daftar spesifik pilihan Anda (USDT & IDR).
-2.  💱 **Smart IDR Conversion:** Analisa menggunakan data global (USDT) yang akurat, hasil ditampilkan dalam Rupiah.
-3.  🛡️ **Filter < 10k:** Hanya menampilkan koin yang harganya masih murah.
+**Perbaikan Sistem:**
+1.  🛡️ **Hybrid Data:** Menggunakan Binance (Real-time) sebagai utama. Jika koin tidak ada, otomatis cari di Yahoo Finance.
+2.  📊 **Laporan Scan:** Menampilkan detail berapa koin yang sukses discan, berapa yang data kosong, dan berapa yang kemahalan.
+3.  💰 **Filter Cerdas:** Tetap menjaga batasan harga < Rp 10.000.
 """)
 
-# --- DATABASE KOIN MASIF (DARI USER) ---
+# --- DATABASE KOIN MASIF ---
 RAW_WATCHLIST = [
     # --- USDT PAIRS ---
     "HEI/USDT", "KOM/USDT", "BROCCOLI714/USDT", "PENGU/USDT", "BIO/USDT", "VANA/USDT", 
@@ -89,7 +90,7 @@ RAW_WATCHLIST = [
     "FIDA/USDT", "ACX/USDT", "DIA/USDT", "SLP/USDT", "MAGIC/USDT", "ERA/USDT", "PHA/USDT", 
     "CTSI/USDT", "TNSR/USDT",
     
-    # --- IDR PAIRS (Akan dikonversi ke USDT untuk analisa) ---
+    # --- IDR PAIRS ---
     "BTC/IDR", "ETH/IDR", "USDT/IDR", "BNB/IDR", "XRP/IDR", "SOL/IDR", "USDC/IDR", 
     "DOGE/IDR", "ADA/IDR", "SUI/IDR", "AVAX/IDR", "HBAR/IDR", "TON/IDR", "TAO/IDR", 
     "ASTER/IDR", "POL/IDR", "WLD/IDR", "ARB/IDR", "ONDO/IDR", "RENDER/IDR", "VIRTUAL/IDR", 
@@ -104,73 +105,80 @@ exchange = ccxt.binance({'enableRateLimit': True})
 # --- SIDEBAR ---
 st.sidebar.header("🎛️ Pusat Kontrol")
 modal_input = st.sidebar.number_input("Modal Trading (Rp)", min_value=100000, value=1000000, step=100000)
-kurs_usd_idr = st.sidebar.number_input("Kurs USD/IDR (Untuk Konversi)", value=16000)
-batas_harga = 10000 # Filter harga < 10k Rupiah
+kurs_usd_idr = st.sidebar.number_input("Kurs USD/IDR", value=16000)
+batas_harga = 10000 # Filter harga
 
-st.sidebar.info("Timeframe: **15 Menit** (Real-Time)")
+st.sidebar.info("Sistem akan mencoba Binance (Realtime) -> Jika gagal -> Yahoo (Backup)")
 
-# --- FUNGSI AMBIL DATA REAL-TIME ---
-def get_data(symbol):
+# --- FUNGSI HYBRID GET DATA ---
+def get_data_hybrid(symbol):
+    df = None
+    source = "None"
+    
+    # 1. COBA BINANCE (CCXT)
     try:
-        # Trik IDR: Kalau symbol berakhiran IDR, kita ambil data USDT-nya dari Binance Global
-        # Lalu nanti kita kali kurs. Ini karena Binance Global tidak punya pair IDR.
-        is_idr_pair = False
+        # Konversi symbol IDR ke USDT untuk request Binance
         target_symbol = symbol
-        
         if "/IDR" in symbol:
-            is_idr_pair = True
-            # Ubah XXX/IDR jadi XXX/USDT
             target_symbol = symbol.replace("/IDR", "/USDT")
-            # Special case: USDT/IDR tidak bisa diubah jadi USDT/USDT (nilainya 1)
-            if symbol == "USDT/IDR": return None 
-
-        bars = exchange.fetch_ohlcv(target_symbol, timeframe='15m', limit=100)
-        df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
-        df.index = df.index + timedelta(hours=7) # WIB
         
-        return df, is_idr_pair
+        # Coba fetch
+        bars = exchange.fetch_ohlcv(target_symbol, timeframe='15m', limit=100)
+        if bars and len(bars) > 0:
+            df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            df.index = df.index + timedelta(hours=7) # WIB
+            source = "Binance (Realtime)"
     except:
-        return None, False
+        pass # Lanjut ke backup
+        
+    # 2. JIKA GAGAL, COBA YAHOO FINANCE
+    if df is None:
+        try:
+            # Format Yahoo: HEI-USD
+            yf_symbol = symbol.replace("/", "-").replace("USDT", "USD").replace("IDR", "USD") # Asumsi IDR pair di Yahoo pakai USD ticker
+            
+            # Khusus beberapa koin aneh, format mungkin beda, tapi kita coba standar dulu
+            data_yf = yf.download(yf_symbol, period='5d', interval='15m', progress=False)
+            
+            if len(data_yf) > 20:
+                if isinstance(data_yf.columns, pd.MultiIndex):
+                    data_yf.columns = data_yf.columns.droplevel(1)
+                
+                df = data_yf[['Open', 'High', 'Low', 'Close', 'Volume']]
+                df.columns = ['open', 'high', 'low', 'close', 'volume'] # Samakan nama kolom
+                df.index = df.index + timedelta(hours=7) # WIB
+                source = "Yahoo (Backup)"
+        except:
+            pass
 
-# --- CEK HYPE ---
-def cek_hype_score(df):
-    try:
-        current_vol = df['volume'].iloc[-1]
-        avg_vol = df['volume'].mean()
-        vol_ratio = current_vol / avg_vol if avg_vol > 0 else 0
-        if vol_ratio > 4.0: return "🔥 VIRAL", vol_ratio
-        elif vol_ratio > 2.0: return "⚡ Rame", vol_ratio
-        else: return "💤 Sepi", vol_ratio
-    except: return "Unknown", 0
+    return df, source
 
 # --- AI CORE ---
 def ramal_koin(symbol):
     try:
-        df, is_idr_pair = get_data(symbol)
-        if df is None: return None
+        df, source = get_data_hybrid(symbol)
         
-        # HITUNG HARGA DALAM RUPIAH
+        # LAPORAN STATUS (Untuk Debugging User)
+        status_msg = "OK"
+        if df is None:
+            return {"status": "DATA_NOT_FOUND", "ticker": symbol}
+        
         current_price_usd = df['close'].iloc[-1]
         current_price_idr = current_price_usd * kurs_usd_idr
         
-        # FILTER HARGA: Jika harga > 10.000, SKIP.
-        if current_price_idr > batas_harga: return None 
+        # FILTER HARGA
+        if current_price_idr > batas_harga:
+            return {"status": "TOO_EXPENSIVE", "ticker": symbol, "price": current_price_idr}
 
-        # INDIKATOR TEKNIS
+        # INDIKATOR
         df['RSI'] = RSIIndicator(close=df['close'], window=14).rsi()
         df['EMA'] = EMAIndicator(close=df['close'], window=20).ema_indicator()
         df.dropna(inplace=True)
         
-        if len(df) < 30: return None
+        if len(df) < 30: return {"status": "DATA_TOO_SHORT", "ticker": symbol}
 
-        hype_status, vol_ratio = cek_hype_score(df)
-        
-        # CEK TREN (EMA)
-        last_price = df['close'].iloc[-1]
-        is_downtrend = last_price < df['EMA'].iloc[-1]
-        
         # AI PREDICTION
         scaler = MinMaxScaler(feature_range=(0, 1))
         features = df[['close', 'RSI', 'volume']].values
@@ -181,7 +189,6 @@ def ramal_koin(symbol):
         for i in range(lookback, len(scaled_data)):
             x_train.append(scaled_data[i-lookback:i, :])
             y_train.append(scaled_data[i, 0])
-        
         x_train, y_train = np.array(x_train), np.array(y_train)
         
         model = Sequential()
@@ -190,83 +197,82 @@ def ramal_koin(symbol):
         model.compile(optimizer='adam', loss='mean_squared_error')
         model.fit(x_train, y_train, epochs=3, batch_size=16, verbose=0)
         
-        # PREDIKSI MASA DEPAN
+        # PREDIKSI
         last_seq = scaled_data[-lookback:].reshape(1, lookback, 3)
-        future_prices_usd = []
-        
+        future_prices = []
         for _ in range(3):
             pred = model.predict(last_seq, verbose=0)[0, 0]
-            future_prices_usd.append(pred)
+            future_prices.append(pred)
             new_step = np.array([[[pred, last_seq[0,-1,1], last_seq[0,-1,2]]]])
             last_seq = np.append(last_seq[:, 1:, :], new_step, axis=1)
             
         dummy = np.zeros((3, 3))
-        dummy[:, 0] = future_prices_usd
+        dummy[:, 0] = future_prices
         real_future_usd = scaler.inverse_transform(dummy)[:, 0]
         final_price_usd = real_future_usd[-1]
         
         change_pct = ((final_price_usd - current_price_usd) / current_price_usd) * 100
-        
-        # LOGIKA TREN (Correction)
-        trend_text = "UPTREND"
-        if is_downtrend:
-            trend_text = "DOWNTREND"
-            if change_pct > 0: change_pct = change_pct * 0.1 # Kurangi optimisme
-            
         profit_idr = (change_pct / 100) * modal_input
-
-        # Convert Grafik ke Rupiah jika User minta IDR, atau tetap Rupiah untuk estimasi
-        display_price_history = df['close'] * kurs_usd_idr
-        display_future_history = real_future_usd * kurs_usd_idr
+        
+        # TREND CHECK
+        trend = "UPTREND" if df['close'].iloc[-1] > df['EMA'].iloc[-1] else "DOWNTREND"
+        if trend == "DOWNTREND" and change_pct > 0: change_pct *= 0.1 # Koreksi
 
         return {
+            "status": "SUCCESS",
             "ticker": symbol,
+            "source": source,
             "price_idr": current_price_idr,
             "change_pct": change_pct,
             "profit_idr": profit_idr,
-            "hype": hype_status,
-            "trend": trend_text,
+            "trend": trend,
             "df_index": df.index,
-            "hist_prices": display_price_history,
-            "future_prices": display_future_history
+            "hist_prices": df['close'] * kurs_usd_idr,
+            "future_prices": real_future_usd * kurs_usd_idr
         }
     except:
-        return None
+        return {"status": "ERROR", "ticker": symbol}
 
 # --- UI UTAMA ---
 st.write("---")
 
-tab1, tab2 = st.tabs(["🎲 SCANNER BATCH (Acak 25)", "🔍 CEK MANUAL"])
+tab1, tab2 = st.tabs(["🎲 SCANNER BATCH (Acak 40)", "🔍 CEK MANUAL"])
 
 with tab1:
-    st.header("Scanner Batch (Acak 25 Koin)")
-    st.write(f"Total Database: **{len(RAW_WATCHLIST)} Koin**. Klik tombol untuk mengambil sampel.")
-    
+    st.header("Scanner Batch (Acak 40 Koin)")
     if st.button("AMBIL SAMPEL & SCAN 🔥"):
-        # Ambil sampel acak agar server tidak overload
-        batch_coins = random.sample(RAW_WATCHLIST, 25)
+        
+        # Batch diperbesar jadi 40 biar kemungkinan dapat koin valid lebih besar
+        batch_coins = random.sample(RAW_WATCHLIST, 40)
         
         results = []
-        progress = st.progress(0)
-        status = st.empty()
+        stats = {"SUCCESS": 0, "DATA_NOT_FOUND": 0, "TOO_EXPENSIVE": 0, "ERROR": 0}
         
-        valid_count = 0
+        progress = st.progress(0)
+        status_box = st.empty()
+        
         for i, coin in enumerate(batch_coins):
-            status.text(f"Mengecek {coin}...")
+            status_box.text(f"Mengecek {coin}...")
             res = ramal_koin(coin)
-            if res:
-                results.append(res)
-                valid_count += 1
-            progress.progress((i + 1) / 25)
             
-        status.text("Selesai!")
+            stats[res.get("status", "ERROR")] = stats.get(res.get("status", "ERROR"), 0) + 1
+            
+            if res["status"] == "SUCCESS":
+                results.append(res)
+            
+            progress.progress((i + 1) / 40)
+            
+        status_box.empty()
+        
+        # TAMPILKAN STATISTIK SCANNING (Supaya user tidak bingung)
+        st.info(f"📊 Laporan Scan: {stats['SUCCESS']} Berhasil | {stats['DATA_NOT_FOUND']} Data Kosong (Tidak ada di Exchange) | {stats['TOO_EXPENSIVE']} Kemahalan (>10k) | {stats['ERROR']} Error")
         
         if results:
             results.sort(key=lambda x: x['change_pct'], reverse=True)
             top = results[0]
             
             st.success(f"💎 **JUARA BATCH: {top['ticker']}**")
-            st.caption(f"Hype: {top['hype']} | Tren: {top['trend']}")
+            st.caption(f"Sumber Data: {top['source']} | Tren: {top['trend']}")
             
             c1, c2, c3 = st.columns(3)
             c1.metric("Harga (Rp)", f"Rp {top['price_idr']:,.2f}")
@@ -279,29 +285,29 @@ with tab1:
             future_dates = pd.date_range(start=last_date + timedelta(minutes=15), periods=3, freq='15min')
             
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=top['df_index'][-30:], y=top['hist_prices'].iloc[-30:], mode='lines+markers', name='Harga (IDR)', line=dict(color='cyan')))
-            
+            fig.add_trace(go.Scatter(x=top['df_index'][-30:], y=top['hist_prices'].iloc[-30:], mode='lines+markers', name='Harga', line=dict(color='cyan')))
             col_line = 'lime' if top['change_pct'] > 0 else 'red'
             fig.add_trace(go.Scatter(x=future_dates, y=top['future_prices'], mode='lines+markers', name='Prediksi', line=dict(color=col_line, width=3)))
             st.plotly_chart(fig, use_container_width=True)
             
-            # Tabel Sisa
             st.write("---")
+            st.write("### Daftar Koin Lolos Filter:")
             rows = []
             for r in results[1:]:
-                rows.append([r['ticker'], f"Rp {r['price_idr']:,.2f}", r['hype'], f"{r['change_pct']:.2f}%", f"Rp {r['profit_idr']:,.0f}"])
-            st.table(pd.DataFrame(rows, columns=["Koin", "Harga", "Hype", "Potensi", "Cuan"]))
+                rows.append([r['ticker'], f"Rp {r['price_idr']:,.2f}", r['source'], f"{r['change_pct']:.2f}%", f"Rp {r['profit_idr']:,.0f}"])
+            st.table(pd.DataFrame(rows, columns=["Koin", "Harga", "Sumber Data", "Potensi", "Cuan"]))
         else:
-            st.warning("Tidak ada koin yang lolos filter (< 10k) di batch ini. Coba lagi!")
+            st.warning("Tidak ada koin yang lolos di batch ini. (Cek Laporan Scan di atas). Coba klik tombol lagi untuk ambil sampel baru.")
 
 with tab2:
     st.header("Cek Manual")
     pilihan = st.selectbox("Pilih Koin", RAW_WATCHLIST)
-    
-    if st.button("Analisa Koin Ini"):
-        with st.spinner("Mengambil data..."):
+    if st.button("Cek Koin Ini"):
+        with st.spinner("Mencari data (Hybrid)..."):
             res = ramal_koin(pilihan)
-            if res:
+            
+            if res["status"] == "SUCCESS":
+                st.success(f"Data Ditemukan via {res['source']}")
                 st.metric("Harga", f"Rp {res['price_idr']:,.2f}")
                 st.metric("Potensi", f"{res['change_pct']:.2f}%", f"Rp {res['profit_idr']:,.0f}")
                 
@@ -312,7 +318,8 @@ with tab2:
                 fig.add_trace(go.Scatter(x=res['df_index'][-30:], y=res['hist_prices'].iloc[-30:], mode='lines+markers', name='Harga', line=dict(color='cyan')))
                 col_line = 'lime' if res['change_pct'] > 0 else 'red'
                 fig.add_trace(go.Scatter(x=future_dates, y=res['future_prices'], mode='lines+markers', name='Prediksi', line=dict(color=col_line, width=3)))
-                
                 st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.error("Gagal. Koin mungkin > Rp 10.000, atau data tidak tersedia di Binance Global.")
+            elif res["status"] == "DATA_NOT_FOUND":
+                st.error("Data koin ini TIDAK DITEMUKAN di Binance maupun Yahoo Finance. Mungkin koin ini hanya ada di Tokocrypto lokal/DEX.")
+            elif res["status"] == "TOO_EXPENSIVE":
+                st.error(f"Koin ini harganya Rp {res['price']:,.2f} (Di atas batas Rp 10.000).")
