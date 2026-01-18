@@ -1,29 +1,30 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
-import yfinance as yf
+import ccxt
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.layers import LSTM, Dense
 import plotly.graph_objects as go
 from ta.momentum import RSIIndicator
 from ta.trend import MACD, EMAIndicator
 import random
+from datetime import datetime, timedelta
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(page_title="Oracle AI: Hype Hunter", layout="wide")
+st.set_page_config(page_title="Oracle AI: Ultimate List", layout="wide")
 
-st.title("👁️ ORACLE AI: Hype & Micin Hunter (< Rp 10.000)")
+st.title("👁️ ORACLE AI: Ultimate Watchlist (USDT & IDR)")
 st.markdown("""
-**Fitur Baru (God Mode):**
-1.  🔥 **Hype Detector:** Mendeteksi "keramaian internet" melalui ledakan volume tak wajar.
-2.  💰 **Filter Harga:** Hanya memproses koin di bawah **Rp 10.000**.
-3.  🎲 **Random Batch:** Mengambil sampel acak dari ratusan koin Tokocrypto agar server tidak crash.
+**Fitur Terbaru:**
+1.  📜 **Custom Watchlist:** Menggunakan daftar spesifik pilihan Anda (USDT & IDR).
+2.  💱 **Smart IDR Conversion:** Analisa menggunakan data global (USDT) yang akurat, hasil ditampilkan dalam Rupiah.
+3.  🛡️ **Filter < 10k:** Hanya menampilkan koin yang harganya masih murah.
 """)
 
 # --- DATABASE KOIN MASIF (DARI USER) ---
-# Format asli user: XXX/USDT. Kita simpan raw dulu.
 RAW_WATCHLIST = [
+    # --- USDT PAIRS ---
     "HEI/USDT", "KOM/USDT", "BROCCOLI714/USDT", "PENGU/USDT", "BIO/USDT", "VANA/USDT", 
     "A2Z/USDT", "VELODROME/USDT", "1000CHEEMS/USDT", "TURTLE/USDT", "MDT/USDT", "ACA/USDT", 
     "CITY/USDT", "ATM/USDT", "COS/USDT", "ACM/USDT", "CHESS/USDT", "DATA/USDT", "NBT/USDT", 
@@ -72,7 +73,7 @@ RAW_WATCHLIST = [
     "HOT/USDT", "NXPC/USDT", "OM/USDT", "AXL/USDT", "REQ/USDT", "VTHO/USDT", "CELO/USDT", 
     "PNUT/USDT", "GMX/USDT", "IOTX/USDT", "PROVE/USDT", "NMR/USDT", "RED/USDT", "AVNT/USDT", 
     "DUSK/USDT", "FXS/USDT", "LRC/USDT", "ANKR/USDT", "SAHARA/USDT", "UMA/USDT", "ORCA/USDT", 
-    "MEME/USDT", "HUMA/USDT", "MASK/USDT", "ALT/USDT", "POLY/USDT", "SKL/USDT", "ICX/USDT", 
+    "MEME/USDT", "HUMA/USDT", "MASK/USDT", "ALT/USDT", "POLYX/USDT", "SKL/USDT", "ICX/USDT", 
     "SSV/USDT", "BB/USDT", "SIGN/USDT", "ENJ/USDT", "ONE/USDT", "LUNA/USDT", "TRB/USDT", 
     "GIGGLE/USDT", "PROM/USDT", "STORJ/USDT", "NOT/USDT", "ONT/USDT", "ARDR/USDT", "LA/USDT", 
     "RLC/USDT", "BAND/USDT", "GMT/USDT", "WOO/USDT", "PLUME/USDT", "COTI/USDT", "AEUR/USDT", 
@@ -86,205 +87,186 @@ RAW_WATCHLIST = [
     "AEVO/USDT", "API3/USDT", "SXT/USDT", "1000SATS/USDT", "OPEN/USDT", "BANANAS31/USDT", 
     "MANTA/USDT", "SANTOS/USDT", "XAI/USDT", "GUN/USDT", "RIF/USDT", "MTL/USDT", "AUCTION/USDT", 
     "FIDA/USDT", "ACX/USDT", "DIA/USDT", "SLP/USDT", "MAGIC/USDT", "ERA/USDT", "PHA/USDT", 
-    "CTSI/USDT", "TNSR/USDT"
+    "CTSI/USDT", "TNSR/USDT",
+    
+    # --- IDR PAIRS (Akan dikonversi ke USDT untuk analisa) ---
+    "BTC/IDR", "ETH/IDR", "USDT/IDR", "BNB/IDR", "XRP/IDR", "SOL/IDR", "USDC/IDR", 
+    "DOGE/IDR", "ADA/IDR", "SUI/IDR", "AVAX/IDR", "HBAR/IDR", "TON/IDR", "TAO/IDR", 
+    "ASTER/IDR", "POL/IDR", "WLD/IDR", "ARB/IDR", "ONDO/IDR", "RENDER/IDR", "VIRTUAL/IDR", 
+    "SPX/IDR", "TIA/IDR", "FLOKI/IDR", "WIF/IDR", "SOON/IDR", "ALCH/IDR", "ZIL/IDR", 
+    "VELO/IDR", "MEW/IDR", "POPCAT/IDR", "GRASS/IDR", "MOODENG/IDR", "JELLYJELLY/IDR", 
+    "CARV/IDR", "NEIRO/IDR", "BOME/IDR", "MANTA/IDR", "GOAT/IDR", "DOGS/IDR", "SCR/IDR"
 ]
 
-# --- SIDEBAR PENGATURAN ---
-st.sidebar.header("🎛️ Pengaturan Scanner")
+# --- SETUP EXCHANGE ---
+exchange = ccxt.binance({'enableRateLimit': True})
+
+# --- SIDEBAR ---
+st.sidebar.header("🎛️ Pusat Kontrol")
 modal_input = st.sidebar.number_input("Modal Trading (Rp)", min_value=100000, value=1000000, step=100000)
-kurs_usd_idr = st.sidebar.number_input("Kurs USD/IDR", value=16000)
-batas_harga = 10000 # Batas Rp 10.000
+kurs_usd_idr = st.sidebar.number_input("Kurs USD/IDR (Untuk Konversi)", value=16000)
+batas_harga = 10000 # Filter harga < 10k Rupiah
 
-st.sidebar.info("Timeframe: 15 Menit (Fixed)")
-yf_interval = "15m"
+st.sidebar.info("Timeframe: **15 Menit** (Real-Time)")
 
-# --- FUNGSI FORMAT TICKER ---
-def format_ticker(raw_ticker):
-    # Mengubah HEI/USDT menjadi HEI-USD (Format Yahoo Finance)
-    return raw_ticker.replace("/USDT", "-USD")
-
-# --- FUNGSI CEK HYPE INTERNET (VOLUME SPIKE) ---
-def cek_hype_score(df):
-    """
-    Menghitung skor hype berdasarkan lonjakan volume.
-    Jika Volume sekarang > 3x Rata-rata Volume, berarti lagi HYPE (Viral).
-    """
+# --- FUNGSI AMBIL DATA REAL-TIME ---
+def get_data(symbol):
     try:
-        current_vol = df['Volume'].iloc[-1]
-        avg_vol = df['Volume'].mean()
+        # Trik IDR: Kalau symbol berakhiran IDR, kita ambil data USDT-nya dari Binance Global
+        # Lalu nanti kita kali kurs. Ini karena Binance Global tidak punya pair IDR.
+        is_idr_pair = False
+        target_symbol = symbol
         
-        # Ratio Volume
-        vol_ratio = current_vol / avg_vol if avg_vol > 0 else 0
+        if "/IDR" in symbol:
+            is_idr_pair = True
+            # Ubah XXX/IDR jadi XXX/USDT
+            target_symbol = symbol.replace("/IDR", "/USDT")
+            # Special case: USDT/IDR tidak bisa diubah jadi USDT/USDT (nilainya 1)
+            if symbol == "USDT/IDR": return None 
+
+        bars = exchange.fetch_ohlcv(target_symbol, timeframe='15m', limit=100)
+        df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.set_index('timestamp', inplace=True)
+        df.index = df.index + timedelta(hours=7) # WIB
         
-        hype_label = "Sepi"
-        hype_score = 0
-        
-        if vol_ratio > 5.0:
-            hype_label = "🔥 VIRAL/FOMO (Internet Ramai)"
-            hype_score = 100
-        elif vol_ratio > 3.0:
-            hype_label = "⚡ Ramai (High Hype)"
-            hype_score = 80
-        elif vol_ratio > 1.5:
-            hype_label = "📈 Mulai Dilirik"
-            hype_score = 50
-        else:
-            hype_label = "💤 Normal/Sepi"
-            hype_score = 20
-            
-        return hype_label, vol_ratio
+        return df, is_idr_pair
     except:
-        return "Unknown", 0
+        return None, False
 
-# --- FUNGSI AI CORE ---
-def ramal_koin(raw_ticker):
-    ticker = format_ticker(raw_ticker)
-    
+# --- CEK HYPE ---
+def cek_hype_score(df):
     try:
-        # Ambil data pendek (20 hari, 15 menit)
-        data = yf.download(ticker, period='20d', interval=yf_interval, progress=False)
+        current_vol = df['volume'].iloc[-1]
+        avg_vol = df['volume'].mean()
+        vol_ratio = current_vol / avg_vol if avg_vol > 0 else 0
+        if vol_ratio > 4.0: return "🔥 VIRAL", vol_ratio
+        elif vol_ratio > 2.0: return "⚡ Rame", vol_ratio
+        else: return "💤 Sepi", vol_ratio
+    except: return "Unknown", 0
+
+# --- AI CORE ---
+def ramal_koin(symbol):
+    try:
+        df, is_idr_pair = get_data(symbol)
+        if df is None: return None
         
-        if len(data) < 40: return None
-        
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.droplevel(1)
-            
-        df = data[['Close', 'Volume']].dropna()
-        
-        # --- FILTER HARGA DI BAWAH 10 RIBU ---
-        current_price_usd = df['Close'].iloc[-1]
-        if isinstance(current_price_usd, pd.Series): current_price_usd = current_price_usd.item()
-        
+        # HITUNG HARGA DALAM RUPIAH
+        current_price_usd = df['close'].iloc[-1]
         current_price_idr = current_price_usd * kurs_usd_idr
         
-        # Jika harga > 10.000, SKIP (Return None)
-        if current_price_idr > batas_harga:
-            return None 
+        # FILTER HARGA: Jika harga > 10.000, SKIP.
+        if current_price_idr > batas_harga: return None 
 
-        # FIX WAKTU WIB
-        df.index = df.index + pd.Timedelta(hours=7)
-
-        # --- INDIKATOR TEKNIS LENGKAP ---
-        # 1. RSI
-        df['RSI'] = RSIIndicator(close=df['Close'], window=14).rsi()
-        # 2. EMA 20 (Tren)
-        df['EMA'] = EMAIndicator(close=df['Close'], window=20).ema_indicator()
-        # 3. MACD
-        macd = MACD(close=df['Close'])
-        df['MACD'] = macd.macd()
-        
+        # INDIKATOR TEKNIS
+        df['RSI'] = RSIIndicator(close=df['close'], window=14).rsi()
+        df['EMA'] = EMAIndicator(close=df['close'], window=20).ema_indicator()
         df.dropna(inplace=True)
+        
+        if len(df) < 30: return None
 
-        # --- CEK HYPE ---
         hype_status, vol_ratio = cek_hype_score(df)
         
-        # --- AI PREDICTION ---
+        # CEK TREN (EMA)
+        last_price = df['close'].iloc[-1]
+        is_downtrend = last_price < df['EMA'].iloc[-1]
+        
+        # AI PREDICTION
         scaler = MinMaxScaler(feature_range=(0, 1))
-        # Fitur: Close, RSI, MACD
-        features = df[['Close', 'RSI', 'MACD']].values
+        features = df[['close', 'RSI', 'volume']].values
         scaled_data = scaler.fit_transform(features)
         
-        lookback = 20
+        lookback = 15
         x_train, y_train = [], []
         for i in range(lookback, len(scaled_data)):
             x_train.append(scaled_data[i-lookback:i, :])
             y_train.append(scaled_data[i, 0])
-            
+        
         x_train, y_train = np.array(x_train), np.array(y_train)
         
-        # Model
         model = Sequential()
-        model.add(LSTM(50, return_sequences=True, input_shape=(x_train.shape[1], 3)))
-        model.add(Dropout(0.2))
-        model.add(LSTM(50, return_sequences=False))
+        model.add(LSTM(30, return_sequences=False, input_shape=(x_train.shape[1], 3)))
         model.add(Dense(1))
         model.compile(optimizer='adam', loss='mean_squared_error')
-        model.fit(x_train, y_train, epochs=5, batch_size=16, verbose=0)
+        model.fit(x_train, y_train, epochs=3, batch_size=16, verbose=0)
         
-        # Prediksi Masa Depan
+        # PREDIKSI MASA DEPAN
         last_seq = scaled_data[-lookback:].reshape(1, lookback, 3)
-        future_prices = []
+        future_prices_usd = []
         
-        for _ in range(5):
+        for _ in range(3):
             pred = model.predict(last_seq, verbose=0)[0, 0]
-            future_prices.append(pred)
-            # Dummy update
+            future_prices_usd.append(pred)
             new_step = np.array([[[pred, last_seq[0,-1,1], last_seq[0,-1,2]]]])
             last_seq = np.append(last_seq[:, 1:, :], new_step, axis=1)
             
-        # Inverse transform
-        dummy = np.zeros((5, 3))
-        dummy[:, 0] = future_prices
-        real_future = scaler.inverse_transform(dummy)[:, 0]
-        final_price = real_future[-1]
+        dummy = np.zeros((3, 3))
+        dummy[:, 0] = future_prices_usd
+        real_future_usd = scaler.inverse_transform(dummy)[:, 0]
+        final_price_usd = real_future_usd[-1]
         
-        change_pct = ((final_price - current_price_usd) / current_price_usd) * 100
+        change_pct = ((final_price_usd - current_price_usd) / current_price_usd) * 100
         
-        # LOGIKA FILTER DUMP (Cegah beli saat longsor)
-        trend_label = "NETRAL"
-        if df['Close'].iloc[-1] < df['EMA'].iloc[-1]:
-            trend_label = "DOWNTREND (Risiko Tinggi)"
-            if change_pct > 0: change_pct = change_pct * 0.2 # Kurangi optimisme AI
-        else:
-            trend_label = "UPTREND (Aman)"
+        # LOGIKA TREN (Correction)
+        trend_text = "UPTREND"
+        if is_downtrend:
+            trend_text = "DOWNTREND"
+            if change_pct > 0: change_pct = change_pct * 0.1 # Kurangi optimisme
             
         profit_idr = (change_pct / 100) * modal_input
 
+        # Convert Grafik ke Rupiah jika User minta IDR, atau tetap Rupiah untuk estimasi
+        display_price_history = df['close'] * kurs_usd_idr
+        display_future_history = real_future_usd * kurs_usd_idr
+
         return {
-            "ticker": raw_ticker,
+            "ticker": symbol,
             "price_idr": current_price_idr,
-            "future_price": final_price,
             "change_pct": change_pct,
             "profit_idr": profit_idr,
             "hype": hype_status,
-            "trend": trend_label,
-            "df": df,
-            "future_array": real_future
+            "trend": trend_text,
+            "df_index": df.index,
+            "hist_prices": display_price_history,
+            "future_prices": display_future_history
         }
-
     except:
         return None
 
 # --- UI UTAMA ---
 st.write("---")
 
-tab1, tab2 = st.tabs(["🎲 SCANNER ACAK (Batch)", "🔍 CEK MANUAL"])
+tab1, tab2 = st.tabs(["🎲 SCANNER BATCH (Acak 25)", "🔍 CEK MANUAL"])
 
 with tab1:
-    st.header("Scanner Batch (Acak 20 Koin)")
-    st.write(f"Database memuat **{len(RAW_WATCHLIST)} koin**. Klik tombol untuk mengambil 20 sampel acak & memfilter harga < Rp 10.000.")
+    st.header("Scanner Batch (Acak 25 Koin)")
+    st.write(f"Total Database: **{len(RAW_WATCHLIST)} Koin**. Klik tombol untuk mengambil sampel.")
     
-    if st.button("Ambil 20 Sampel & Scan 🔥"):
-        
-        # AMBIL 20 SAMPLE ACAK DARI LIST BESAR
-        batch_coins = random.sample(RAW_WATCHLIST, 20)
+    if st.button("AMBIL SAMPEL & SCAN 🔥"):
+        # Ambil sampel acak agar server tidak overload
+        batch_coins = random.sample(RAW_WATCHLIST, 25)
         
         results = []
         progress = st.progress(0)
         status = st.empty()
         
         valid_count = 0
-        
         for i, coin in enumerate(batch_coins):
-            status.text(f"Mengecek {coin}... (Filter < 10k)")
+            status.text(f"Mengecek {coin}...")
             res = ramal_koin(coin)
-            
-            # Jika lolos filter (tidak None)
             if res:
                 results.append(res)
                 valid_count += 1
-            
-            progress.progress((i + 1) / 20)
+            progress.progress((i + 1) / 25)
             
         status.text("Selesai!")
         
-        if len(results) > 0:
-            # Urutkan berdasarkan Potensi Cuan
+        if results:
             results.sort(key=lambda x: x['change_pct'], reverse=True)
             top = results[0]
             
-            st.success(f"💎 **JUARA BATCH INI: {top['ticker']}**")
-            st.caption(f"Status Internet: {top['hype']} | Tren: {top['trend']}")
+            st.success(f"💎 **JUARA BATCH: {top['ticker']}**")
+            st.caption(f"Hype: {top['hype']} | Tren: {top['trend']}")
             
             c1, c2, c3 = st.columns(3)
             c1.metric("Harga (Rp)", f"Rp {top['price_idr']:,.2f}")
@@ -293,49 +275,44 @@ with tab1:
             
             # Grafik
             st.subheader(f"Grafik: {top['ticker']}")
-            df = top['df']
-            future_vals = top['future_array']
-            last_date = df.index[-1]
-            future_dates = pd.date_range(start=last_date + pd.Timedelta(minutes=15), periods=5, freq='15min')
+            last_date = top['df_index'][-1]
+            future_dates = pd.date_range(start=last_date + timedelta(minutes=15), periods=3, freq='15min')
             
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df.index[-40:], y=df['Close'].iloc[-40:], mode='lines', name='Harga', line=dict(color='cyan')))
+            fig.add_trace(go.Scatter(x=top['df_index'][-30:], y=top['hist_prices'].iloc[-30:], mode='lines+markers', name='Harga (IDR)', line=dict(color='cyan')))
             
             col_line = 'lime' if top['change_pct'] > 0 else 'red'
-            fig.add_trace(go.Scatter(x=future_dates, y=future_vals, mode='lines+markers', name='Prediksi', line=dict(color=col_line, width=3)))
-            
+            fig.add_trace(go.Scatter(x=future_dates, y=top['future_prices'], mode='lines+markers', name='Prediksi', line=dict(color=col_line, width=3)))
             st.plotly_chart(fig, use_container_width=True)
             
+            # Tabel Sisa
             st.write("---")
-            st.write("**Hasil Scan Lainnya (Lolos Filter Harga):**")
-            
             rows = []
             for r in results[1:]:
                 rows.append([r['ticker'], f"Rp {r['price_idr']:,.2f}", r['hype'], f"{r['change_pct']:.2f}%", f"Rp {r['profit_idr']:,.0f}"])
-            
-            st.table(pd.DataFrame(rows, columns=["Koin", "Harga", "Kondisi Internet", "Potensi", "Cuan"]))
-            
+            st.table(pd.DataFrame(rows, columns=["Koin", "Harga", "Hype", "Potensi", "Cuan"]))
         else:
-            st.warning("Dari 20 sampel acak ini, tidak ada yang lolos filter (Mungkin harganya > 10rb atau data error). Coba klik scan lagi!")
+            st.warning("Tidak ada koin yang lolos filter (< 10k) di batch ini. Coba lagi!")
 
 with tab2:
-    st.header("Cek Manual Dari Database")
-    # Dropdown berisi semua koin user
-    pilihan_manual = st.selectbox("Pilih Koin", RAW_WATCHLIST)
+    st.header("Cek Manual")
+    pilihan = st.selectbox("Pilih Koin", RAW_WATCHLIST)
     
-    if st.button("Cek Koin Ini"):
-        with st.spinner("Mengecek..."):
-            res = ramal_koin(pilihan_manual)
-            
+    if st.button("Analisa Koin Ini"):
+        with st.spinner("Mengambil data..."):
+            res = ramal_koin(pilihan)
             if res:
                 st.metric("Harga", f"Rp {res['price_idr']:,.2f}")
-                st.metric("Kondisi Internet", res['hype'])
                 st.metric("Potensi", f"{res['change_pct']:.2f}%", f"Rp {res['profit_idr']:,.0f}")
                 
-                # Grafik
-                df = res['df']
+                last_date = res['df_index'][-1]
+                future_dates = pd.date_range(start=last_date + timedelta(minutes=15), periods=3, freq='15min')
+                
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(x=df.index[-40:], y=df['Close'].iloc[-40:], mode='lines', name='Harga', line=dict(color='cyan')))
+                fig.add_trace(go.Scatter(x=res['df_index'][-30:], y=res['hist_prices'].iloc[-30:], mode='lines+markers', name='Harga', line=dict(color='cyan')))
+                col_line = 'lime' if res['change_pct'] > 0 else 'red'
+                fig.add_trace(go.Scatter(x=future_dates, y=res['future_prices'], mode='lines+markers', name='Prediksi', line=dict(color=col_line, width=3)))
+                
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.error("Koin ini harganya di atas Rp 10.000 atau data belum tersedia di Yahoo Finance.")
+                st.error("Gagal. Koin mungkin > Rp 10.000, atau data tidak tersedia di Binance Global.")
