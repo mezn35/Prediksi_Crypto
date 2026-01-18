@@ -3,24 +3,25 @@ import numpy as np
 import pandas as pd
 import ccxt
 import yfinance as yf
-from ta.volatility import BollingerBands
+from ta.volatility import BollingerBands, AverageTrueRange
 from ta.momentum import RSIIndicator, StochasticOscillator
-from datetime import timedelta
+from datetime import datetime, timedelta
+import plotly.graph_objects as go
 import random
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(page_title="SNIPER HYBRID", layout="wide")
-st.title("🎯 SNIPER HYBRID: Real-Time + Backup")
+st.set_page_config(page_title="SWING MASTER 30%", layout="wide")
+st.title("🏹 SWING MASTER: Target Profit 30%")
 st.markdown("""
-**Sistem Cerdas:**
-* 🥇 **Coba Binance Dulu:** Untuk data Real-Time akurat.
-* 🥈 **Backup Yahoo:** Jika koin tidak ada di Binance, pakai data Yahoo (Delay 15m) agar tetap ada sinyal.
-* 📝 **Live Log:** Anda bisa lihat koin apa saja yang sedang dicek.
+**Strategi Big Profit:**
+* 🎯 **Target:** Minimal 30% Kenaikan.
+* 📅 **Waktu:** Menghitung estimasi tanggal panen berdasarkan kecepatan koin.
+* 📊 **Visual:** Grafik Candlestick dengan Zona Beli & Jual.
 """)
 
-# --- DATABASE KOIN LENGKAP ---
+# --- DATABASE KOIN ---
 WATCHLIST = [
-    # --- USDT PAIRS ---
+    # --- USDT PAIRS (Prioritas Micin & Volatil) ---
     "HEI/USDT", "KOM/USDT", "BROCCOLI714/USDT", "PENGU/USDT", "BIO/USDT", "VANA/USDT", 
     "A2Z/USDT", "VELODROME/USDT", "1000CHEEMS/USDT", "TURTLE/USDT", "MDT/USDT", "ACA/USDT", 
     "CITY/USDT", "ATM/USDT", "COS/USDT", "ACM/USDT", "CHESS/USDT", "DATA/USDT", "NBT/USDT", 
@@ -94,189 +95,200 @@ WATCHLIST = [
     "CARV/IDR", "NEIRO/IDR", "BOME/IDR", "MANTA/IDR", "GOAT/IDR", "DOGS/IDR", "SCR/IDR"
 ]
 
-# --- KONEKSI EXCHANGE (CCXT) ---
-exchange = ccxt.binance({
-    'enableRateLimit': True, 
-    'options': {'defaultType': 'spot'}
-})
+# --- KONEKSI ---
+exchange = ccxt.binance({'enableRateLimit': True})
 
-# --- SIDEBAR SETTINGS ---
+# --- SIDEBAR ---
 with st.sidebar:
-    st.header("⚙️ Pengaturan Sniper")
+    st.header("⚙️ Pengaturan")
     modal_awal = st.number_input("Modal Trading (Rp)", value=1000000)
-    target_profit_pct = st.slider("Target Profit (%)", 1.0, 10.0, 2.5)
-    stop_loss_pct = st.slider("Stop Loss (%)", 0.5, 5.0, 1.5)
     kurs_usd_idr = st.number_input("Kurs USD/IDR", value=16100)
+    st.divider()
+    st.warning("⚠️ Target 30% membutuhkan waktu (bisa berhari-hari). Ini bukan scalping 5 menit.")
 
-# --- FUNGSI DATA HYBRID (BINANCE -> YAHOO) ---
-def get_hybrid_data(symbol):
+# --- FUNGSI HYBRID DATA (Binance -> Yahoo) ---
+def get_data(symbol):
     df = None
-    source = "Unknown"
+    source = ""
     
-    # 1. COBA BINANCE (REAL-TIME)
+    # 1. Coba Binance (Realtime)
     try:
-        target_symbol = symbol
-        if "/IDR" in symbol:
-            target_symbol = symbol.replace("/IDR", "/USDT")
+        target = symbol.replace("/IDR", "/USDT")
+        # Mapping khusus
+        if "JELLY" in target: target = "JELLY/USDT" 
         
-        # Mapping nama khusus
-        if target_symbol == "ALCH/USDT": target_symbol = "ACH/USDT"
-        if target_symbol == "JELLYJELLY/USDT": target_symbol = "JELLY/USDT" 
-            
-        bars = exchange.fetch_ohlcv(target_symbol, timeframe='15m', limit=50)
+        bars = exchange.fetch_ohlcv(target, timeframe='1h', limit=100) # Timeframe 1 Jam untuk Swing
         if bars:
             df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
             df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=7)
             df.set_index('time', inplace=True)
-            source = "⚡ REAL-TIME"
+            source = "Realtime"
     except:
-        pass # Lanjut ke backup
+        pass
 
-    # 2. JIKA GAGAL, COBA YAHOO (BACKUP)
+    # 2. Coba Yahoo (Backup)
     if df is None:
         try:
-            # Format Yahoo: XXX-USD
             yf_sym = symbol.replace("/", "-").replace("USDT", "USD").replace("IDR", "USD")
-            
-            # Download
-            data_yf = yf.download(yf_sym, period='2d', interval='15m', progress=False)
+            data_yf = yf.download(yf_sym, period='1mo', interval='1h', progress=False)
             if len(data_yf) > 10:
                 if isinstance(data_yf.columns, pd.MultiIndex): data_yf.columns = data_yf.columns.droplevel(1)
                 df = data_yf[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
                 df.columns = ['open', 'high', 'low', 'close', 'vol']
                 df.index = df.index + timedelta(hours=7)
-                source = "⚠️ DELAY 15M"
+                source = "Backup (Delay)"
         except:
             pass
             
     return df, source
 
-# --- ALGORITMA SNIPER ---
-def analyze_coin(symbol):
-    df, source = get_hybrid_data(symbol)
-    if df is None: return None # Benar-benar tidak ada data di mana pun
+# --- ANALISA SWING 30% ---
+def analyze_swing(symbol):
+    df, source = get_data(symbol)
+    if df is None: return None
     
-    # Indikator
     close = df['close']
-    bb = BollingerBands(close=close, window=20, window_dev=2)
-    df['bb_h'] = bb.bollinger_hband()
-    df['bb_l'] = bb.bollinger_lband()
-    df['rsi'] = RSIIndicator(close=close, window=14).rsi()
     
-    # Posisi Terakhir
+    # 1. Hitung Volatilitas (ATR) untuk Estimasi Waktu
+    df['atr'] = AverageTrueRange(high=df['high'], low=df['low'], close=close, window=14).average_true_range()
+    current_atr = df['atr'].iloc[-1]
     last_price = close.iloc[-1]
-    last_rsi = df['rsi'].iloc[-1]
-    bb_low = df['bb_l'].iloc[-1]
-    bb_high = df['bb_h'].iloc[-1]
+    
+    # Berapa % rata-rata pergerakan per jam?
+    hourly_move_pct = (current_atr / last_price) * 100
+    if hourly_move_pct == 0: hourly_move_pct = 0.5 # Default jika data flat
+    
+    # 2. Hitung Estimasi Waktu untuk mencapai 30%
+    # Rumus: 30% / (% Gerak per Jam) = Jam yang dibutuhkan
+    hours_needed = 30 / hourly_move_pct
+    days_needed = hours_needed / 24
+    
+    # Waktu
+    buy_time = df.index[-1]
+    sell_time_est = buy_time + timedelta(hours=hours_needed)
+    
+    # 3. Target Harga
+    price_idr = last_price * kurs_usd_idr
+    tp_price_idr = price_idr * 1.30 # Target 30%
+    sl_price_idr = price_idr * 0.90 # Stop Loss 10% (Risk Reward 1:3)
+    
+    # 4. Sinyal Masuk (Cari yang lagi Murah/Diskon)
+    df['rsi'] = RSIIndicator(close=close, window=14).rsi()
+    rsi = df['rsi'].iloc[-1]
     
     signal = "WAIT"
-    confidence = 0
-    reason = "Sideways"
+    reason = "Harga Normal"
+    score = 0
     
-    # SINYAL BELI: Harga di Bawah BB + RSI Murah
-    if last_price <= (bb_low * 1.02) and last_rsi < 50:
-        signal = "BUY NOW"
-        confidence = 80
-        reason = "Harga Diskon (Support BB)"
-        if last_rsi < 35: 
-            confidence = 95
+    if rsi < 40:
+        signal = "BUY SETUP"
+        reason = "Harga Diskon (RSI Rendah)"
+        score = 80
+        if rsi < 30:
+            score = 95
             reason = "SUPER DISKON (Oversold)"
             
-    # SINYAL JUAL
-    elif last_price >= (bb_high * 0.98) and last_rsi > 60:
-        signal = "SELL NOW"
-        confidence = 80
-        reason = "Harga Pucuk (Resistance BB)"
-        
-    # Estimasi Rupiah
-    price_idr = last_price * kurs_usd_idr
-    tp_price = price_idr * (1 + target_profit_pct/100)
-    sl_price = price_idr * (1 - stop_loss_pct/100)
+    profit_est = modal_awal * 0.30
     
     return {
         "ticker": symbol,
         "price_idr": price_idr,
+        "tp": tp_price_idr,
+        "sl": sl_price_idr,
+        "buy_date": buy_time,
+        "sell_date": sell_time_est,
+        "days": days_needed,
         "signal": signal,
-        "confidence": confidence,
         "reason": reason,
-        "tp": tp_price,
-        "sl": sl_price,
+        "score": score,
+        "df": df,
         "source": source
     }
 
-# --- TAMPILAN DASHBOARD ---
-st.info("💡 **INFO:** Sistem akan mencoba data Real-Time dulu. Jika tidak ada, baru pakai data Yahoo (Delay).")
-
-# TOMBOL SCAN BATCH BESAR
-if st.button("🚀 SCANNER SNIPER (ACAK 50 KOIN)", type="primary"):
-    
-    # Batch diperbesar jadi 50 biar peluang dapat koin valid lebih besar
-    batch = random.sample(WATCHLIST, 50)
-    
-    results_buy = []
-    
-    # Area Log untuk melihat proses
-    log_area = st.empty()
-    progress = st.progress(0)
-    
-    scan_log = []
-    
-    for i, coin in enumerate(batch):
-        # Update log visual
-        log_area.text(f"Mengecek {coin}...")
-        res = analyze_coin(coin)
+# --- UI UTAMA ---
+col_scan, col_info = st.columns([1, 3])
+with col_scan:
+    if st.button("🔎 CARI KOIN POTENSI 30% (ACAK)", type="primary"):
+        st.session_state['scan_results'] = []
+        batch = random.sample(WATCHLIST, 40)
         
-        if res:
-            scan_log.append(f"✅ {coin}: {res['source']}")
-            if "BUY" in res['signal']: results_buy.append(res)
-        else:
-            scan_log.append(f"❌ {coin}: Tidak Ditemukan")
-            
-        progress.progress((i+1)/50)
-        
-    log_area.empty()
-    progress.empty()
+        progress = st.progress(0)
+        for i, coin in enumerate(batch):
+            res = analyze_swing(coin)
+            if res and res['score'] > 0: # Hanya simpan yang ada setup
+                st.session_state['scan_results'].append(res)
+            progress.progress((i+1)/40)
+        progress.empty()
+
+# TAMPILKAN HASIL
+if 'scan_results' in st.session_state and st.session_state['scan_results']:
+    results = st.session_state['scan_results']
+    results.sort(key=lambda x: x['score'], reverse=True)
     
-    # --- HASIL ---
-    st.subheader(f"Hasil Scan ({len(results_buy)} Sinyal Beli Ditemukan)")
+    best = results[0] # Ambil yang terbaik
     
-    if results_buy:
-        results_buy.sort(key=lambda x: x['confidence'], reverse=True)
-        for item in results_buy:
-            with st.container():
-                # Badge Sumber Data
-                badge_color = "green" if "REAL" in item['source'] else "orange"
-                st.markdown(f"### {item['ticker']} :{badge_color}[[{item['source']}]]")
-                
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Harga Beli (Est)", f"Rp {item['price_idr']:,.0f}")
-                c2.metric("Jual Di (TP)", f"Rp {item['tp']:,.0f}", f"+{target_profit_pct}%")
-                c3.error(f"Stop Loss: Rp {item['sl']:,.0f}")
-                
-                st.caption(f"Alasan: {item['reason']}")
-                st.divider()
-    else:
-        st.warning("Tidak ada sinyal BELI yang kuat di batch ini. Pasar mungkin sedang tinggi.")
+    st.success(f"💎 **REKOMENDASI TERBAIK: {best['ticker']}** ({best['source']})")
+    
+    # --- DETAIL WAKTU BELI & JUAL ---
+    c1, c2, c3 = st.columns(3)
+    c1.metric("BELI SEKARANG", f"Rp {best['price_idr']:,.0f}", help=f"Tanggal: {best['buy_date'].strftime('%d-%b %H:%M')}")
+    c2.metric("JUAL DI (TARGET 30%)", f"Rp {best['tp']:,.0f}", f"Est: {best['sell_date'].strftime('%d-%b')}")
+    c3.metric("STOP LOSS (AMANKAN)", f"Rp {best['sl']:,.0f}", "-10%")
+    
+    st.info(f"⏳ **Estimasi Waktu Tahan:** {best['days']:.1f} Hari (Tergantung volatilitas pasar)")
+    
+    # --- GRAFIK PRO (CANDLESTICK + BOX) ---
+    st.subheader(f"Grafik Trading Plan: {best['ticker']}")
+    
+    df = best['df']
+    last_idx = df.index[-1]
+    future_idx = best['sell_date']
+    
+    fig = go.Figure()
+    
+    # 1. Candlestick
+    fig.add_trace(go.Candlestick(x=df.index,
+                    open=df['open'], high=df['high'],
+                    low=df['low'], close=df['close'],
+                    name='Harga'))
+    
+    # 2. Kotak Hijau (Profit Area)
+    fig.add_shape(type="rect",
+        x0=last_idx, y0=best['price_idr']/kurs_usd_idr,
+        x1=future_idx, y1=best['tp']/kurs_usd_idr,
+        line=dict(color="green", width=0),
+        fillcolor="rgba(0, 255, 0, 0.2)", # Transparan Hijau
+    )
+    
+    # 3. Kotak Merah (Loss Area)
+    fig.add_shape(type="rect",
+        x0=last_idx, y0=best['sl']/kurs_usd_idr,
+        x1=future_idx, y1=best['price_idr']/kurs_usd_idr,
+        line=dict(color="red", width=0),
+        fillcolor="rgba(255, 0, 0, 0.2)", # Transparan Merah
+    )
+    
+    # 4. Garis Target
+    fig.add_trace(go.Scatter(
+        x=[last_idx, future_idx], 
+        y=[best['tp']/kurs_usd_idr, best['tp']/kurs_usd_idr],
+        mode="lines+text",
+        name="Target 30%",
+        line=dict(color="green", dash="dash"),
+        text=[f"", f"TP: +30%"],
+        textposition="top right"
+    ))
 
-    # Tampilkan Log Scanning (Supaya user tau sistem bekerja)
-    with st.expander("Lihat Log Scanning (Apa yang terjadi?)"):
-        st.write(scan_log)
+    fig.update_layout(xaxis_rangeslider_visible=False, height=500, title="Visualisasi Area Profit (Hijau) vs Risiko (Merah)")
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # --- TABEL SISA ---
+    st.write("---")
+    st.write("**Opsi Lain yang Sedang Murah:**")
+    rows = []
+    for r in results[1:]:
+        rows.append([r['ticker'], f"Rp {r['price_idr']:,.0f}", f"Rp {r['tp']:,.0f}", f"{r['days']:.1f} Hari"])
+    st.table(pd.DataFrame(rows, columns=["Koin", "Harga Beli", "Harga Jual (30%)", "Est. Waktu"]))
 
-# --- CEK MANUAL ---
-st.sidebar.markdown("---")
-st.sidebar.header("🔍 Cek Koin Tertentu")
-manual_coin = st.sidebar.selectbox("Pilih Koin", WATCHLIST)
-
-if st.sidebar.button("Cek Sinyal Koin Ini"):
-    with st.spinner("Mencari data..."):
-        res = analyze_coin(manual_coin)
-        if res:
-            color = "green" if "BUY" in res['signal'] else "red" if "SELL" in res['signal'] else "gray"
-            st.sidebar.markdown(f"### :{color}[{res['signal']}]")
-            st.sidebar.caption(f"Sumber: {res['source']}")
-            
-            st.sidebar.write(f"Harga: Rp {res['price_idr']:,.0f}")
-            st.sidebar.write(f"TP: Rp {res['tp']:,.0f}")
-            st.sidebar.info(res['reason'])
-        else:
-            st.sidebar.error("Data tidak ditemukan di server manapun.")
+else:
+    st.info("Klik tombol **CARI KOIN** untuk memulai analisa.")
