@@ -31,6 +31,12 @@ if st.sidebar.button("Jalankan Analisa Mendalam ⚡"):
             # 1. AMBIL DATA (Lebih banyak data: 4 Tahun)
             data = yf.download(ticker, period='4y', interval='1d', progress=False)
             
+            # --- BAGIAN PERBAIKAN ERROR (ANTI-ERROR) ---
+            # Jika yfinance mengembalikan data ganda (MultiIndex), kita ratakan dulu
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.droplevel(1)
+            
+            # Pastikan data yang diambil valid
             if len(data) < 200:
                 st.error("Data tidak cukup untuk analisa tingkat lanjut. Pilih koin yang lebih tua.")
                 st.stop()
@@ -38,19 +44,21 @@ if st.sidebar.button("Jalankan Analisa Mendalam ⚡"):
             # 2. FEATURE ENGINEERING (Menambahkan Indikator Teknis)
             df = data.copy()
             
+            # Paksa kolom Close menjadi 1 Dimensi (Squeeze) agar TA library tidak error
+            close_series = df['Close'].squeeze()
+            
             # Tambahkan RSI (Kekuatan Pasar)
-            rsi = RSIIndicator(close=df['Close'], window=14)
+            rsi = RSIIndicator(close=close_series, window=14)
             df['RSI'] = rsi.rsi()
             
             # Tambahkan MACD (Tren Momentum)
-            macd = MACD(close=df['Close'])
+            macd = MACD(close=close_series)
             df['MACD'] = macd.macd()
             
             # Bersihkan data yang kosong (NaN) akibat perhitungan indikator
             df.dropna(inplace=True)
             
             # Kita hanya ambil kolom penting
-            # Fitur yang dipelajari AI: Harga Close, Volume, RSI, MACD
             features = ['Close', 'Volume', 'RSI', 'MACD']
             dataset = df[features].values
             
@@ -63,42 +71,35 @@ if st.sidebar.button("Jalankan Analisa Mendalam ⚡"):
             
             X, y = [], []
             for i in range(lookback, len(scaled_data)):
-                X.append(scaled_data[i-lookback:i, :]) # Ambil semua fitur (Close, Vol, RSI, MACD)
-                y.append(scaled_data[i, 0]) # Target yang ditebak hanya 'Close' (indeks ke-0)
+                X.append(scaled_data[i-lookback:i, :]) # Ambil semua fitur
+                y.append(scaled_data[i, 0]) # Target hanya 'Close'
                 
             X, y = np.array(X), np.array(y)
             
-            # Pisahkan Data Latih (80%) dan Data Uji (20%) untuk Validasi Akurasi
+            # Pisahkan Data Latih (80%) dan Data Uji (20%)
             train_size = int(len(X) * 0.8)
             X_train, X_test = X[:train_size], X[train_size:]
             y_train, y_test = y[:train_size], y[train_size:]
 
-            # 5. BANGUN MODEL AI YANG LEBIH KOMPLEKS
+            # 5. BANGUN MODEL AI
             model = Sequential()
-            # Layer 1
             model.add(LSTM(units=100, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])))
             model.add(Dropout(0.3))
-            # Layer 2
             model.add(LSTM(units=100, return_sequences=False))
             model.add(Dropout(0.3))
-            # Output Layer
             model.add(Dense(units=1))
 
             model.compile(optimizer='adam', loss='mean_squared_error')
             model.fit(X_train, y_train, epochs=epochs_setting, batch_size=32, verbose=0)
 
             # 6. PENGUJIAN AKURASI (BACKTESTING)
-            # Prediksi pada data uji (masa lalu yang belum dilihat AI saat latihan)
             predicted_test = model.predict(X_test)
             
-            # Kembalikan angka desimal 0-1 ke harga asli Dolar
-            # Kita perlu trik karena scaler memuat 4 fitur, tapi kita cuma mau inverse 'Close'
-            # Buat dummy array dengan bentuk yang sama
+            # Inverse Transform (Trik mengembalikan harga asli)
             dummy_array = np.zeros((len(predicted_test), len(features)))
             dummy_array[:, 0] = predicted_test.flatten()
             inverse_pred = scaler.inverse_transform(dummy_array)[:, 0]
             
-            # Kembalikan harga asli y_test juga
             dummy_y = np.zeros((len(y_test), len(features)))
             dummy_y[:, 0] = y_test
             inverse_actual = scaler.inverse_transform(dummy_y)[:, 0]
@@ -112,7 +113,11 @@ if st.sidebar.button("Jalankan Analisa Mendalam ⚡"):
             dummy_future[:, 0] = pred_future_scaled.flatten()
             future_price = scaler.inverse_transform(dummy_future)[0, 0]
             
+            # Menggunakan .iloc[-1] dan .item() agar aman dari error dimensi
             current_price = df['Close'].iloc[-1]
+            if isinstance(current_price, pd.Series):
+                current_price = current_price.item()
+                
             diff = future_price - current_price
             change_pct = (diff / current_price) * 100
 
@@ -120,7 +125,6 @@ if st.sidebar.button("Jalankan Analisa Mendalam ⚡"):
             st.divider()
             st.subheader(f"🔍 Analisa AI untuk {ticker}")
             
-            # Metrik Utama
             col1, col2, col3 = st.columns(3)
             col1.metric("Harga Terakhir", f"${current_price:,.2f}")
             col2.metric("Prediksi AI (Besok)", f"${future_price:,.2f}", delta=f"{change_pct:.2f}%")
@@ -136,24 +140,20 @@ if st.sidebar.button("Jalankan Analisa Mendalam ⚡"):
             # --- KESIMPULAN/SINYAL ---
             st.write("### 📝 Rekomendasi Tindakan")
             
-            # Logika Gabungan (AI + RSI)
             if change_pct > 1.5 and last_rsi < 70:
-                st.success(f"**STRONG BUY (BELI KUAT)** 🚀\n\nAI memprediksi kenaikan signifikan (+{change_pct:.2f}%) dan RSI belum jenuh ({last_rsi:.1f}). Momen bagus untuk masuk.")
+                st.success(f"**STRONG BUY (BELI KUAT)** 🚀\n\nAI memprediksi kenaikan signifikan (+{change_pct:.2f}%) dan RSI belum jenuh ({last_rsi:.1f}).")
             elif change_pct > 0.5:
                 st.info(f"**BUY / ACCUMULATE (BELI BERTAHAP)** 🟢\n\nTren positif terlihat, tapi kenaikan mungkin perlahan.")
             elif change_pct < -1.5:
-                st.error(f"**STRONG SELL / AVOID (JUAL/HINDARI)** 🔻\n\nAI mendeteksi potensi penurunan tajam. RSI ada di {last_rsi:.1f}. Sebaiknya amankan aset.")
+                st.error(f"**STRONG SELL / AVOID (JUAL/HINDARI)** 🔻\n\nAI mendeteksi potensi penurunan tajam. Sebaiknya amankan aset.")
             else:
                 st.warning(f"**WAIT AND SEE (TUNGGU)** ⚠️\n\nPasar sedang tidak jelas (Sideways). Risiko tinggi jika memaksa masuk.")
 
-            # --- BUKTI AKURASI (BACKTEST) ---
+            # --- BUKTI AKURASI ---
             st.write("---")
             st.write("### 🧪 Bukti Pengujian (Backtest)")
-            st.caption("Grafik di bawah ini membandingkan prediksi AI (Garis Merah) vs Harga Asli (Garis Biru) pada data masa lalu. Jika garis merah menempel ketat dengan biru, artinya AI ini akurat.")
             
-            # Visualisasi Backtest
             fig = go.Figure()
-            # Ambil tanggal yang sesuai dengan data test
             test_dates = df.index[train_size+lookback:]
             
             fig.add_trace(go.Scatter(x=test_dates, y=inverse_actual, name='Harga Asli', line=dict(color='blue')))
@@ -161,13 +161,11 @@ if st.sidebar.button("Jalankan Analisa Mendalam ⚡"):
             
             st.plotly_chart(fig, use_container_width=True)
             
-            # Hitung Error Rata-rata
             mae = np.mean(np.abs(inverse_pred - inverse_actual))
             st.write(f"**Rata-rata Meleset (Mean Absolute Error):** ${mae:.2f}")
-            st.write("*Semakin kecil angka 'Meleset', semakin akurat model ini.*")
 
         except Exception as e:
-            st.error(f"Terjadi error: {e}. Coba refresh atau ganti kode crypto.")
+            st.error(f"Terjadi error teknis: {e}. Mohon refresh halaman dan coba lagi.")
 
 else:
     st.info("Masukkan kode crypto di kiri dan tekan tombol untuk memulai analisa tingkat tinggi.")
