@@ -5,21 +5,21 @@ import ccxt
 import yfinance as yf
 import requests
 import plotly.graph_objects as go
-import google.generativeai as genai # OTAK GEMINI
+import google.generativeai as genai
 from ta.trend import EMAIndicator
 from ta.momentum import RSIIndicator
 from datetime import datetime, timedelta
 import time
 import random
 
-# --- KONFIGURASI ---
-st.set_page_config(page_title="AI GEMINI CRYPTO", layout="wide")
-st.title("🧠 AI GEMINI PRO: Analisa Teknikal + Nalar AI")
+# --- KONFIGURASI HALAMAN ---
+st.set_page_config(page_title="AI DUAL ENGINE PRO", layout="wide")
+st.title("🧠 AI DUAL ENGINE: Agresif vs Moderat")
 st.markdown("""
-**Evolusi Terakhir:**
-1.  🤖 **Gemini Brain:** Setiap sinyal akan dicek ulang oleh AI Google (Gemini) untuk analisa logika.
-2.  🌐 **Social Sentinel:** Data Fear & Greed Index.
-3.  🛡️ **Pos Ronda:** Monitor 24 Jam.
+**Sistem 2 Jalur:**
+1.  🔥 **SUPER AGRESIF:** Mencari koin *Oversold* parah (RSI < 25). Target: Pantulan Cepat (Rebound).
+2.  🛡️ **MODERAT (AKURAT):** Mencari koin *Uptrend* yang sedang diskon. Target: Ikut Tren (Follow Trend).
+3.  🌐 **Social & Gemini:** Semua sinyal divalidasi oleh Sentimen Internet & Otak AI.
 """)
 
 # --- DATABASE KOIN ---
@@ -90,41 +90,15 @@ exchanges = {
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("🧠 Otak Gemini")
-    gemini_key = st.text_input("Gemini API Key (Wajib)", type="password", help="Dapatkan di aistudio.google.com")
+    gemini_key = st.text_input("Gemini API Key", type="password")
     
     st.divider()
     st.header("🎛️ Kontrol")
     run_sentinel = st.checkbox("🔴 AKTIFKAN POS RONDA", value=False)
-    target_pct = st.slider("Target Cuan (%)", 2.0, 50.0, 5.0)
+    target_pct = st.slider("Target Profit (%)", 2.0, 50.0, 5.0)
     kurs_usd = st.number_input("Kurs USD", value=16200)
 
-# --- FUNGSI GEMINI ANALYST ---
-def ask_gemini_opinion(symbol, price, rsi, ema200, sentiment_idx, sentiment_text):
-    if not gemini_key: return "⚠️ Gemini Key Belum Diisi"
-    
-    try:
-        genai.configure(api_key=gemini_key)
-        model = genai.GenerativeModel('gemini-pro')
-        
-        prompt = f"""
-        Act as a Senior Crypto Analyst. Analyze this setup:
-        - Coin: {symbol}
-        - Current Price: ${price}
-        - Trend (EMA200): Price is {'ABOVE' if price > ema200 else 'BELOW'} EMA200
-        - RSI (14): {rsi:.2f}
-        - Market Sentiment (Fear/Greed): {sentiment_idx}/100 ({sentiment_text})
-        
-        Task:
-        Give a short, sharp verdict (2-3 sentences). Is this a "Valid Buy" or a "Trap"? 
-        Explain why based on the correlation between Sentiment and Technicals.
-        """
-        
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        return f"Gemini Error: {str(e)}"
-
-# --- FUNGSI SENTIMEN ---
+# --- FUNGSI SENTIMEN SOSIAL ---
 def get_social_sentiment():
     try:
         url = "https://api.alternative.me/fng/"
@@ -134,11 +108,42 @@ def get_social_sentiment():
     except:
         return 50, "Neutral"
 
+# --- FUNGSI GEMINI (DUAL MODE) ---
+def ask_gemini(symbol, price, rsi, trend_status, mode, sentiment_text):
+    if not gemini_key: return "⚠️ Pasang API Key dulu."
+    
+    try:
+        genai.configure(api_key=gemini_key)
+        model = genai.GenerativeModel('gemini-pro')
+        
+        if mode == "AGRESIF":
+            prompt = f"""
+            Role: Crypto Sniper.
+            Context: Analyzing {symbol}. Market Sentiment is {sentiment_text}.
+            Data: Price ${price}, RSI {rsi:.1f} (Very Low), Trend: {trend_status}.
+            
+            Question: This is a falling knife / heavy dip. Is this a potential REBOUND/BOUNCE opportunity?
+            Answer YES or NO first, then explain risk (High/Extreme). Be brief.
+            """
+        else: # MODERAT
+            prompt = f"""
+            Role: Conservative Trader.
+            Context: Analyzing {symbol}. Market Sentiment is {sentiment_text}.
+            Data: Price ${price}, RSI {rsi:.1f}, Trend: {trend_status}.
+            
+            Question: Is this a healthy dip in an uptrend? Is it safe to enter?
+            Answer YES or NO first. Be brief.
+            """
+            
+        response = model.generate_content(prompt)
+        return response.text
+    except:
+        return "Gemini Error."
+
 # --- FUNGSI DATA ---
 def get_data(symbol):
     pair = symbol.replace("/IDR", "/USDT")
     df = None
-    source = ""
     for name, exc in exchanges.items():
         try:
             bars = exc.fetch_ohlcv(pair, timeframe='1h', limit=100)
@@ -146,7 +151,6 @@ def get_data(symbol):
                 df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
                 df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=7)
                 df.set_index('time', inplace=True)
-                source = name.upper()
                 break
         except: continue
         
@@ -159,18 +163,16 @@ def get_data(symbol):
                 df = data_yf[['Open', 'High', 'Low', 'Close', 'Volume']]
                 df.columns = ['open', 'high', 'low', 'close', 'vol']
                 df.index = df.index + timedelta(hours=7)
-                source = "Yahoo (Delay)"
         except: pass
-        
-    return df, source
+    return df
 
-# --- ANALISA UTAMA ---
-def analyze_smart(symbol, sentiment_score, sentiment_text):
-    df, source = get_data(symbol)
+# --- CORE LOGIC: DUAL ENGINE ---
+def analyze_dual_engine(symbol, sent_idx, sent_text):
+    df = get_data(symbol)
     if df is None: return None
     
     close = df['close']
-    current_price = close.iloc[-1]
+    curr = close.iloc[-1]
     
     df['ema200'] = EMAIndicator(close=close, window=200).ema_indicator()
     df['rsi'] = RSIIndicator(close=close, window=14).rsi()
@@ -178,69 +180,94 @@ def analyze_smart(symbol, sentiment_score, sentiment_text):
     rsi = df['rsi'].iloc[-1]
     ema200 = df['ema200'].iloc[-1]
     
-    # STRATEGI DASAR (SCREENING AWAL)
-    is_candidate = False
+    trend_status = "UPTREND" if curr > ema200 else "DOWNTREND"
     
-    # Kondisi 1: Fear (Cari Diskon)
-    if sentiment_score < 30 and rsi < 35: is_candidate = True
-    # Kondisi 2: Normal/Greed (Cari Tren Sehat)
-    elif sentiment_score >= 30 and current_price > ema200 and rsi < 55: is_candidate = True
-
-    if is_candidate:
-        # PANGGIL GEMINI UNTUK KEPUTUSAN FINAL
-        gemini_verdict = ask_gemini_opinion(symbol, current_price, rsi, ema200, sentiment_score, sentiment_text)
-        
-        return {
+    result = None
+    
+    # --- MESIN 1: SUPER AGRESIF (Cari Pantulan/Rebound) ---
+    # Syarat: RSI Hancur (< 30) atau (< 35 jika pasar Fear)
+    limit_rsi = 35 if sent_idx < 40 else 30
+    
+    if rsi < limit_rsi:
+        gemini_says = ask_gemini(symbol, curr, rsi, trend_status, "AGRESIF", sent_text)
+        result = {
+            "type": "🔥 AGRESIF",
             "symbol": symbol,
-            "entry": current_price,
-            "tp": current_price * (1 + target_pct/100),
-            "source": source,
-            "gemini_says": gemini_verdict,
+            "entry": curr,
+            "tp": curr * (1 + (target_pct*2)/100), # Target profit lebih besar krn risiko besar
+            "rsi": rsi,
+            "gemini": gemini_says,
             "df": df
         }
-    return None
+        
+    # --- MESIN 2: MODERAT (Cari Tren Aman) ---
+    # Syarat: Harga > EMA200 DAN RSI < 55 (Koreksi Wajar)
+    elif curr > ema200 and rsi < 55:
+        gemini_says = ask_gemini(symbol, curr, rsi, trend_status, "MODERAT", sent_text)
+        result = {
+            "type": "🛡️ MODERAT",
+            "symbol": symbol,
+            "entry": curr,
+            "tp": curr * (1 + target_pct/100),
+            "rsi": rsi,
+            "gemini": gemini_says,
+            "df": df
+        }
+        
+    return result
 
-# --- UI UTAMA ---
+# --- UI TAMPILAN ---
 sent_val, sent_text = get_social_sentiment()
+st.metric("Sentimen Sosial (Fear/Greed)", f"{sent_val}/100", sent_text)
 
-st.metric("Sentimen Pasar", f"{sent_val}/100", sent_text)
+# Tabs untuk memisahkan hasil
+tab1, tab2 = st.tabs(["🔥 HASIL SUPER AGRESIF", "🛡️ HASIL MODERAT"])
 
-placeholder = st.empty()
+monitor_text = st.empty()
 
 if run_sentinel:
     if not gemini_key:
-        st.error("❌ MASUKKAN GEMINI API KEY DULU DI SIDEBAR!")
+        st.error("⚠️ Masukkan API Key Gemini dulu di menu kiri!")
     else:
         while True:
-            batch = random.sample(WATCHLIST, 3)
-            with placeholder.container():
-                st.write(f"🤖 Gemini sedang menganalisa: {', '.join(batch)} ...")
+            batch = random.sample(WATCHLIST, 5)
+            with monitor_text.container():
+                st.info(f"Scanning Dual Engine: {', '.join(batch)} ...")
                 
                 for coin in batch:
-                    res = analyze_smart(coin, sent_val, sent_text)
-                    time.sleep(2) 
+                    res = analyze_dual_engine(coin, sent_val, sent_text)
+                    time.sleep(1) # Jeda manusia
                     
                     if res:
-                        st.success(f"🧠 **GEMINI MENEMUKAN SINYAL: {res['symbol']}**")
-                        
-                        # TAMPILKAN PENDAPAT GEMINI
-                        st.info(f"💬 **Pendapat Analyst Gemini:**\n{res['gemini_says']}")
-                        
-                        c1, c2 = st.columns(2)
-                        c1.metric("BELI", f"${res['entry']:.5f}", f"Rp {res['entry']*kurs_usd:,.0f}")
-                        c2.metric("JUAL", f"${res['tp']:.5f}")
-                        
-                        fig = go.Figure()
-                        fig.add_trace(go.Candlestick(x=res['df'].index, open=res['df']['open'], high=res['df']['high'], low=res['df']['low'], close=res['df']['close']))
-                        fig.add_trace(go.Scatter(x=res['df'].index, y=res['df']['ema200'], line=dict(color='orange'), name='EMA 200'))
-                        st.plotly_chart(fig, use_container_width=True)
-                        
+                        # BUNYIKAN ALARM
                         audio_html = """<audio autoplay><source src="https://www.soundjay.com/buttons/sounds/button-37.mp3" type="audio/mpeg"></audio>"""
                         st.markdown(audio_html, unsafe_allow_html=True)
                         
-                        st.stop()
+                        # TAMPILKAN DI TAB YANG SESUAI
+                        if "AGRESIF" in res['type']:
+                            with tab1:
+                                st.success(f"🚨 **DITEMUKAN: {res['symbol']}**")
+                                st.warning(f"🤖 Gemini: {res['gemini']}")
+                                st.metric("Harga Entry (Serok)", f"${res['entry']:.5f}", f"RSI: {res['rsi']:.1f}")
+                                
+                                fig = go.Figure()
+                                fig.add_trace(go.Candlestick(x=res['df'].index, open=res['df']['open'], high=res['df']['high'], low=res['df']['low'], close=res['df']['close']))
+                                st.plotly_chart(fig, use_container_width=True)
+                                
+                        else:
+                            with tab2:
+                                st.success(f"✅ **DITEMUKAN: {res['symbol']}**")
+                                st.info(f"🤖 Gemini: {res['gemini']}")
+                                st.metric("Harga Entry (Aman)", f"${res['entry']:.5f}", f"RSI: {res['rsi']:.1f}")
+                                
+                                fig = go.Figure()
+                                fig.add_trace(go.Candlestick(x=res['df'].index, open=res['df']['open'], high=res['df']['high'], low=res['df']['low'], close=res['df']['close']))
+                                fig.add_trace(go.Scatter(x=res['df'].index, y=res['df']['ema200'], line=dict(color='orange'), name='EMA 200'))
+                                st.plotly_chart(fig, use_container_width=True)
+                        
+                        st.stop() # Berhenti jika ketemu
             
-            time.sleep(5)
+            time.sleep(5) # Istirahat antar batch
 
 else:
-    placeholder.info("Masukkan API Key Gemini di kiri, lalu Centang **AKTIFKAN POS RONDA**.")
+    monitor_text.info("Centang **AKTIFKAN POS RONDA** untuk menyalakan Dua Mesin sekaligus.")
