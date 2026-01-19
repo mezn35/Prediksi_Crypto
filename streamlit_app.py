@@ -3,28 +3,26 @@ import numpy as np
 import pandas as pd
 import ccxt
 import yfinance as yf
+import requests
 import plotly.graph_objects as go
+import google.generativeai as genai
 from ta.trend import EMAIndicator
 from ta.momentum import RSIIndicator
 from datetime import datetime, timedelta
 import time
 import random
-import base64
 
-# --- KONFIGURASI ---
-st.set_page_config(page_title="AI SENTINEL (AUTO-ALARM)", layout="wide")
-
-# --- JUDUL & STATUS ---
-st.title("🚨 AI SENTINEL: Pos Ronda 24 Jam")
+# --- KONFIGURASI HALAMAN ---
+st.set_page_config(page_title="AI TRINITY SENTINEL", layout="wide")
+st.title("🚨 TRINITY SENTINEL: 3 Mode Berjalan Bersamaan")
 st.markdown("""
-**Cara Kerja Mode Otomatis:**
-1.  Centang **"AKTIFKAN POS RONDA"** di menu kiri.
-2.  Biarkan layar menyala (Jangan di-close). Keraskan volume speaker.
-3.  AI akan mencari koin "Perfect Buy" setiap 60 detik.
-4.  Jika ketemu, **ALARM AKAN BERBUNYI** memanggil Anda.
+**Sistem 3-in-1 Berjalan Otomatis:**
+1.  🔥 **Super Agresif (AI):** Mencari pantulan di harga hancur (RSI < 25) + Validasi Gemini.
+2.  🧠 **Moderat Cerdas (AI):** Mencari tren sehat (Uptrend) + Validasi Gemini.
+3.  🛡️ **Classic Sentinel:** Strategi murni teknikal (EMA200 + RSI < 45) tanpa delay AI.
 """)
 
-# --- DATABASE KOIN MICIN (< 10k) ---
+# --- DATABASE KOIN MICIN ---
 WATCHLIST = [
     "HEI/USDT", "BROCCOLI714/USDT", "PENGU/USDT", "BIO/USDT", "A2Z/USDT", 
     "VELODROME/USDT", "1000CHEEMS/USDT", "TURTLE/USDT", "MDT/USDT", "ACA/USDT", 
@@ -82,49 +80,75 @@ WATCHLIST = [
     "ERA/USDT", "PHA/USDT", "CTSI/USDT", "TNSR/USDT"
 ]
 
-# --- SETUP ---
+# --- SETUP EXCHANGE ---
 exchanges = {
     'binance': ccxt.binance({'enableRateLimit': True}),
     'gateio': ccxt.gateio({'enableRateLimit': True}),
+    'mexc': ccxt.mexc({'enableRateLimit': True}),
 }
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.header("🎛️ Pusat Kontrol")
-    run_sentinel = st.checkbox("🔴 AKTIFKAN POS RONDA (AUTO-SCAN)", value=False)
+    st.header("🧠 Otak Gemini (Wajib)")
+    gemini_key = st.text_input("Gemini API Key", type="password")
+    
+    st.divider()
+    st.header("🎛️ Kontrol Pos Ronda")
+    run_sentinel = st.checkbox("🔴 AKTIFKAN POS RONDA (AUTO)", value=False)
     
     st.write("---")
-    st.write("**Setting Target:**")
     target_pct = st.slider("Target Cuan (%)", 2.0, 50.0, 5.0)
-    kurs_usd_idr = st.number_input("Kurs USD", value=16200)
+    kurs_usd = st.number_input("Kurs USD", value=16200)
 
-# --- FUNGSI ALARM ---
-def play_alarm():
-    # Suara Beep Keras (Base64)
-    audio_html = """
-    <audio autoplay>
-    <source src="https://www.soundjay.com/buttons/sounds/button-37.mp3" type="audio/mpeg">
-    </audio>
-    """
-    st.markdown(audio_html, unsafe_allow_html=True)
+# --- FUNGSI 1: SENTIMEN SOSIAL/INTERNET ---
+def get_social_sentiment():
+    try:
+        url = "https://api.alternative.me/fng/"
+        response = requests.get(url)
+        data = response.json()
+        value = int(data['data'][0]['value'])
+        status = data['data'][0]['value_classification']
+        return value, status
+    except:
+        return 50, "Neutral"
 
-# --- FUNGSI DATA ---
+# --- FUNGSI 2: ASK GEMINI ---
+def ask_gemini(symbol, price, rsi, trend_status, mode, sentiment_text):
+    if not gemini_key: return "⚠️ API Key Gemini belum diisi."
+    
+    try:
+        genai.configure(api_key=gemini_key)
+        model = genai.GenerativeModel('gemini-pro')
+        
+        prompt = f"""
+        Role: Crypto Expert.
+        Coin: {symbol}. Price: ${price}. RSI: {rsi:.1f}. Trend: {trend_status}.
+        Market Sentiment (Social Media/News): {sentiment_text}.
+        Mode: {mode}.
+        
+        Question: Is this a good buy opportunity? Answer YES/NO and give 1 reason.
+        """
+        response = model.generate_content(prompt)
+        return response.text
+    except:
+        return "Gemini Error."
+
+# --- FUNGSI 3: GET DATA (ROBUST) ---
 def get_data(symbol):
     pair = symbol.replace("/IDR", "/USDT")
     df = None
-    source = ""
-    
-    # 1. Binance
-    try:
-        bars = exchanges['binance'].fetch_ohlcv(pair, timeframe='1h', limit=200)
-        if bars:
-            df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
-            df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=7)
-            df.set_index('time', inplace=True)
-            source = "Binance"
-    except: pass
-    
-    # 2. Yahoo (Backup)
+    # Cek Exchange Utama
+    for name, exc in exchanges.items():
+        try:
+            bars = exc.fetch_ohlcv(pair, timeframe='1h', limit=200) # Butuh 200 utk EMA200
+            if bars:
+                df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
+                df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=7)
+                df.set_index('time', inplace=True)
+                break
+        except: continue
+        
+    # Backup Yahoo
     if df is None:
         try:
             yf_sym = pair.replace("/", "-").replace("USDT", "USD")
@@ -134,109 +158,125 @@ def get_data(symbol):
                 df = data_yf[['Open', 'High', 'Low', 'Close', 'Volume']]
                 df.columns = ['open', 'high', 'low', 'close', 'vol']
                 df.index = df.index + timedelta(hours=7)
-                source = "Yahoo"
         except: pass
-        
-    return df, source
+    return df
 
-# --- LOGIKA KETAT (PENGECUT / AMAN) ---
-def check_for_golden_moment(symbol):
-    df, source = get_data(symbol)
+# --- FUNGSI 4: TRINITY LOGIC ---
+def analyze_trinity(symbol, sent_val, sent_text):
+    df = get_data(symbol)
     if df is None or len(df) < 50: return None
     
     close = df['close']
+    curr = close.iloc[-1]
     
-    # Indikator
     df['ema200'] = EMAIndicator(close=close, window=200).ema_indicator()
     df['ema50'] = EMAIndicator(close=close, window=50).ema_indicator()
     df['rsi'] = RSIIndicator(close=close, window=14).rsi()
     
-    current_price = close.iloc[-1]
+    rsi = df['rsi'].iloc[-1]
     ema200 = df['ema200'].iloc[-1]
     ema50 = df['ema50'].iloc[-1]
-    rsi = df['rsi'].iloc[-1]
     
-    # SYARAT 1: HARUS UPTREND (Harga > EMA 200)
-    # Ini syarat mutlak "Pengecut" biar gak rugi
-    if current_price < ema200: return None 
+    trend_status = "UPTREND" if curr > ema200 else "DOWNTREND"
+    result = None
     
-    # SYARAT 2: HARUS DISKON (RSI < 45)
-    # Kita tidak mau beli di pucuk
-    if rsi > 45: return None
-    
-    # Jika lolos dua syarat di atas = GOLDEN MOMENT
-    return {
-        "symbol": symbol,
-        "entry": current_price,
-        "tp": current_price * (1 + target_pct/100),
-        "sl": current_price * 0.95,
-        "rsi": rsi,
-        "source": source,
-        "df": df
-    }
+    # --- STRATEGI 1: SUPER AGRESIF (AI) ---
+    # Syarat: RSI Sangat Rendah (< 25)
+    if rsi < 25:
+        gemini = ask_gemini(symbol, curr, rsi, trend_status, "SUPER AGGRESSIVE", sent_text)
+        result = {
+            "mode": "🔥 SUPER AGRESIF (AI)",
+            "symbol": symbol, "entry": curr,
+            "tp": curr * (1 + (target_pct*2)/100),
+            "rsi": rsi, "gemini": gemini, "df": df
+        }
+        
+    # --- STRATEGI 2: MODERAT CERDAS (AI) ---
+    # Syarat: Harga > EMA200 dan RSI < 55
+    elif curr > ema200 and rsi < 55:
+        gemini = ask_gemini(symbol, curr, rsi, trend_status, "MODERATE SMART", sent_text)
+        result = {
+            "mode": "🧠 MODERAT CERDAS (AI)",
+            "symbol": symbol, "entry": curr,
+            "tp": curr * (1 + target_pct/100),
+            "rsi": rsi, "gemini": gemini, "df": df
+        }
+        
+    # --- STRATEGI 3: CLASSIC SENTINEL (KODE ASLI) ---
+    # Syarat: Harga > EMA200 DAN Harga > EMA50 DAN RSI < 45
+    elif curr > ema200 and curr > ema50 and rsi < 45:
+        result = {
+            "mode": "🛡️ CLASSIC SENTINEL",
+            "symbol": symbol, "entry": curr,
+            "tp": curr * (1 + target_pct/100),
+            "rsi": rsi, "gemini": "Tidak Perlu (Murni Teknikal)", "df": df
+        }
+        
+    return result
 
-# --- LOOPING MONITORING (THE SENTINEL) ---
-monitor_placeholder = st.empty()
-result_placeholder = st.empty()
+# --- FUNGSI ALARM ---
+def play_alarm():
+    audio_html = """<audio autoplay><source src="https://www.soundjay.com/buttons/sounds/button-37.mp3" type="audio/mpeg"></audio>"""
+    st.markdown(audio_html, unsafe_allow_html=True)
 
+# --- UI UTAMA ---
+sent_val, sent_text = get_social_sentiment()
+st.metric("Sentimen Internet (News/Social)", f"{sent_val}/100", sent_text)
+
+monitor_ph = st.empty()
+result_ph = st.empty()
+
+# --- POS RONDA LOOP ---
 if run_sentinel:
-    st.toast("🛡️ POS RONDA AKTIF! Jangan tutup tab ini.")
-    
-    while True:
-        # 1. Ambil 5 koin acak untuk dicek (supaya tidak kena limit)
-        batch = random.sample(WATCHLIST, 5)
-        
-        # Tampilan Status (Biar tau AI hidup)
-        current_time = datetime.now().strftime("%H:%M:%S")
-        with monitor_placeholder.container():
-            st.info(f"🕒 {current_time} | Sedang meronda: {', '.join(batch)} ...")
-        
-        # 2. Cek Koin
-        found_signal = False
-        for coin in batch:
-            res = check_for_golden_moment(coin)
-            if res:
-                found_signal = True
+    if not gemini_key:
+        st.error("⚠️ Masukkan API Key Gemini dulu di Sidebar!")
+    else:
+        while True:
+            # Ambil 5 koin acak
+            batch = random.sample(WATCHLIST, 5)
+            
+            with monitor_ph.container():
+                st.info(f"🔄 TRINITY SCANNING: {', '.join(batch)} ...")
                 
-                # --- JIKA KETEMU ---
-                play_alarm() # BUNYIKAN ALARM
-                
-                with result_placeholder.container():
-                    st.success(f"🚨 **ALARM! PELUANG DITEMUKAN: {res['symbol']}**")
-                    st.write(f"RSI: {res['rsi']:.1f} (Murah & Uptrend)")
+                for coin in batch:
+                    res = analyze_trinity(coin, sent_val, sent_text)
                     
-                    c1, c2 = st.columns(2)
-                    c1.metric("BELI SEKARANG", f"${res['entry']:.6f}")
-                    c2.metric("JUAL NANTI", f"${res['tp']:.6f}", f"+{target_pct}%")
-                    
-                    # Grafik
-                    df = res['df']
-                    fig = go.Figure()
-                    fig.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close']))
-                    fig.add_trace(go.Scatter(x=df.index, y=df['ema200'], line=dict(color='blue'), name='EMA 200'))
-                    # Kotak Hijau
-                    fig.add_shape(type="rect", x0=df.index[-1], y0=res['entry'], x1=df.index[-1]+timedelta(hours=12), y1=res['tp'], fillcolor="rgba(0,255,0,0.2)", line=dict(width=0))
-                    
-                    st.plotly_chart(fig, use_container_width=True)
-                    st.stop() # BERHENTI SCAN SUPAYA USER BISA LIHAT
-        
-        # 3. Jeda Waktu (Supaya tidak diblokir Binance)
-        time.sleep(15) # Istirahat 15 detik sebelum scan lagi
-        
+                    if res:
+                        play_alarm() # BUNYIKAN ALARM
+                        
+                        with result_ph.container():
+                            # Header Hasil Sesuai Mode
+                            if "AGRESIF" in res['mode']:
+                                st.error(f"🚨 {res['mode']}: {res['symbol']}")
+                            elif "MODERAT" in res['mode']:
+                                st.info(f"🚨 {res['mode']}: {res['symbol']}")
+                            else:
+                                st.success(f"🚨 {res['mode']}: {res['symbol']}")
+                                
+                            st.caption(f"Analisa Tambahan: {res['gemini']}")
+                            
+                            c1, c2 = st.columns(2)
+                            c1.metric("BELI SEKARANG", f"${res['entry']:.6f}", f"Rp {res['entry']*kurs_usd:,.0f}")
+                            c2.metric("JUAL NANTI", f"${res['tp']:.6f}")
+                            
+                            # Grafik
+                            fig = go.Figure()
+                            df = res['df']
+                            fig.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close']))
+                            fig.add_trace(go.Scatter(x=df.index, y=df['ema200'], line=dict(color='blue'), name='EMA 200'))
+                            fig.add_trace(go.Scatter(x=df.index, y=df['ema50'], line=dict(color='orange'), name='EMA 50'))
+                            
+                            # Kotak Target
+                            fig.add_shape(type="rect", x0=df.index[-1], y0=res['entry'], x1=df.index[-1]+timedelta(hours=12), y1=res['tp'], fillcolor="rgba(0,255,0,0.2)", line=dict(width=0))
+                            
+                            st.plotly_chart(fig, use_container_width=True)
+                            
+                            st.warning("Matikan centang 'Pos Ronda' untuk scan ulang.")
+                            st.stop() # Freeze layar
+                            
+                    time.sleep(1) # Jeda antar koin
+            
+            time.sleep(5) # Jeda antar batch
+
 else:
-    monitor_placeholder.info("👈 Centang **'AKTIFKAN POS RONDA'** di sebelah kiri untuk menyalakan mode otomatis.")
-    
-    # Tombol Scan Manual Biasa
-    if st.button("Scan Manual Sekali Saja"):
-        batch = random.sample(WATCHLIST, 20)
-        found = False
-        progress = st.progress(0)
-        for i, c in enumerate(batch):
-            res = check_for_golden_moment(c)
-            if res:
-                st.success(f"✅ DITEMUKAN: {res['symbol']} (RSI {res['rsi']:.1f})")
-                found = True
-            progress.progress((i+1)/20)
-        
-        if not found:
-            st.warning("Belum ada koin yang lolos filter 'Aman & Murah' di batch ini.")
+    monitor_ph.info("👈 Centang **'AKTIFKAN POS RONDA'** di menu kiri untuk memulai Auto-Scan 3 Mesin.")
