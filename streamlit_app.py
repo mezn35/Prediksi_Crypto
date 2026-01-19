@@ -3,9 +3,8 @@ import numpy as np
 import pandas as pd
 import ccxt
 import yfinance as yf
-import requests
+import requests # KITA PAKAI INI UNTUK PANGGIL GEMINI
 import plotly.graph_objects as go
-import google.generativeai as genai
 from ta.trend import EMAIndicator
 from ta.momentum import RSIIndicator
 from datetime import datetime, timedelta
@@ -13,10 +12,10 @@ import time
 import random
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(page_title="AI TRINITY COMMANDER", layout="wide")
-st.title("🎛️ AI TRINITY: Fail-Safe Edition")
+st.set_page_config(page_title="AI TRINITY: DIRECT MODE", layout="wide")
+st.title("🎛️ AI TRINITY: Direct Link Edition")
 
-# --- DATABASE KOIN MICIN ---
+# --- DATABASE KOIN ---
 WATCHLIST = [
     "HEI/USDT", "BROCCOLI714/USDT", "PENGU/USDT", "BIO/USDT", "A2Z/USDT", 
     "VELODROME/USDT", "1000CHEEMS/USDT", "TURTLE/USDT", "MDT/USDT", "ACA/USDT", 
@@ -117,35 +116,38 @@ def get_social_sentiment():
     except:
         return 50, "Neutral"
 
-# --- FUNGSI ASK GEMINI (FAIL-SAFE) ---
-# INI PERBAIKAN UTAMANYA
+# --- FUNGSI GEMINI JALUR BELAKANG (DIRECT HTTP) ---
+# Ini tidak pakai library google, jadi ANTI-ERROR 404
 def ask_gemini(symbol, price, rsi, trend_status, mode, sentiment_text):
     if not gemini_key: return "⚠️ API Key Kosong"
     
-    genai.configure(api_key=gemini_key)
+    # URL Langsung ke Server Google (Bypass Library Streamlit)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
     
-    # KITA COBA SEMUA MODEL YANG MUNGKIN ADA
-    # Jika satu gagal, dia coba yg lain
-    model_list = ['gemini-1.5-flash', 'gemini-pro', 'gemini-1.0-pro']
+    headers = {'Content-Type': 'application/json'}
     
-    prompt = f"""
-    Role: Crypto Sniper. Context: Coin {symbol}, Price ${price}, RSI {rsi:.1f}, Trend {trend_status}.
-    Market Sentiment: {sentiment_text}. Mode: {mode}.
-    Is this a good entry? Yes/No and why? Short answer.
+    prompt_text = f"""
+    Act as Crypto Analyst. 
+    Coin: {symbol}, Price: ${price}, RSI: {rsi:.1f}, Trend: {trend_status}.
+    Sentiment: {sentiment_text}. Mode: {mode}.
+    Question: Is this a good entry? Answer YES/NO and short reason.
     """
     
-    last_error = ""
+    payload = {
+        "contents": [{
+            "parts": [{"text": prompt_text}]
+        }]
+    }
     
-    for model_name in model_list:
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
-            return response.text # BERHASIL!
-        except Exception as e:
-            last_error = str(e)
-            continue # Coba model berikutnya
-            
-    return f"Gemini Gagal (Update Library): {last_error}"
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        if response.status_code == 200:
+            result = response.json()
+            return result['candidates'][0]['content']['parts'][0]['text']
+        else:
+            return f"Error Google: {response.status_code} (Cek API Key)"
+    except Exception as e:
+        return f"Koneksi Gagal: {str(e)}"
 
 # --- FUNGSI DATA ---
 def get_data(symbol):
@@ -195,19 +197,19 @@ def analyze_market(symbol, mode_choice, sent_idx, sent_text):
     res = None
     gemini_msg = "-"
     
-    # MODE 1: AGRESIF
+    # MODE 1
     if "MODE 1" in mode_choice:
         if rsi < 35:
             gemini_msg = ask_gemini(symbol, curr, rsi, trend, "AGRESIF", sent_text)
             res = {"type": "🔥 AGRESIF", "reason": "RSI Oversold"}
 
-    # MODE 2: MODERAT
+    # MODE 2
     elif "MODE 2" in mode_choice:
         if curr > ema200 and rsi < 55:
             gemini_msg = ask_gemini(symbol, curr, rsi, trend, "MODERAT", sent_text)
             res = {"type": "🧠 MODERAT", "reason": "Uptrend + Diskon"}
 
-    # MODE 3: KLASIK
+    # MODE 3
     elif "MODE 3" in mode_choice:
         if curr > ema200 and curr > df['ema50'].iloc[-1] and rsi < 45:
             res = {"type": "🛡️ SENTINEL", "reason": "Pure Technical Setup"}
