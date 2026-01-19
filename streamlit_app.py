@@ -4,17 +4,22 @@ import pandas as pd
 import ccxt
 import yfinance as yf
 import plotly.graph_objects as go
+from ta.volatility import BollingerBands, AverageTrueRange
+from ta.trend import EMAIndicator, MACD
+from ta.momentum import RSIIndicator, StochasticOscillator
 from datetime import datetime, timedelta
 import random
+import time
 
-# --- KONFIGURASI ---
-st.set_page_config(page_title="AI FORECASTER V4 (Anti-Blokir)", layout="wide")
-st.title("🔮 AI FORECASTER: Prediksi 2 Langkah (Anti-Blokir)")
+# --- KONFIGURASI HALAMAN ---
+st.set_page_config(page_title="ULTIMATE AI CRYPTO", layout="wide")
+st.title("🤖 ULTIMATE AI: Time Traveler + Sniper Mode")
 st.markdown("""
-**Fitur Perbaikan:**
-1.  🛡️ **Dual Engine:** Jika Binance macet, otomatis pakai Data Cadangan.
-2.  ⚡ **Real-Time Price:** Mengutamakan harga detik ini.
-3.  👣 **2 Target:** Target Pendek (Cepat) & Target Jauh (Swing).
+**Fitur Lengkap Kembali:**
+1.  ⚡ **Real-Time Data:** Harga detik ini (Sinkron Tokocrypto).
+2.  📅 **Time Traveler:** Prediksi Tanggal & Jam (Kapan Beli, Kapan Jual).
+3.  🛡️ **Smart Filter:** Anti-Zombie (Volume) & Anti-Crash (Falling Knife).
+4.  📊 **Visual Pro:** Grafik Candlestick dengan Area Profit (Hijau) & Stop Loss (Merah).
 """)
 
 # --- DATABASE KOIN ---
@@ -36,183 +41,258 @@ WATCHLIST = [
     "ALPINE/USDT", "BEL/USDT", "JUV/USDT", "HOOK/USDT", "NKN/USDT", "QUICK/USDT"
 ]
 
-# Inisialisasi Exchange
-exchange = ccxt.binance({'enableRateLimit': True, 'timeout': 10000})
+# Inisialisasi Exchange (Binance)
+exchange = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'spot'}})
 
-# --- SIDEBAR ---
+# --- SIDEBAR PENGATURAN ---
 with st.sidebar:
-    st.header("⚙️ Pengaturan Kurs")
-    kurs_usd_idr = st.number_input("Kurs USD ke IDR", value=16200, step=50)
-    st.info("Sistem sekarang punya 'Ban Serep'. Kalau server utama macet, dia otomatis ganti jalur.")
+    st.header("⚙️ Pusat Komando")
+    modal_awal = st.number_input("Modal Investasi (Rp)", value=1000000, step=500000)
+    kurs_usd_idr = st.number_input("Kurs USD/IDR (Sesuaikan)", value=16200, step=50)
+    target_profit_pct = st.slider("Target Profit (%)", 2.0, 30.0, 5.0)
+    st.divider()
+    st.info("💡 **Tips:** Jika hasil scan kosong, berarti pasar sedang berbahaya (Crash/Sideways). AI menjaga modal Anda.")
 
-# --- FUNGSI PENGAMBIL DATA (ROBUST) ---
-def get_robust_data(symbol):
-    # TARGET 1: COBA BINANCE (REAL-TIME)
+# --- FUNGSI 1: DATA ENGINE (ANTI-BLOKIR) ---
+def get_market_data(symbol):
+    df = None
+    current_price = 0
+    source = "Mencari..."
+    
+    # JALUR 1: BINANCE REAL-TIME
     try:
-        # Bersihkan simbol untuk CCXT (Binance butuh format BTC/USDT)
-        target_ccxt = symbol.replace("/IDR", "/USDT")
+        # Bersihkan simbol (IDR -> USDT)
+        target = symbol.replace("/IDR", "/USDT")
+        if "JELLY" in target: target = "JELLY/USDT"
         
-        # Ambil Harga Terakhir (Ticker)
-        ticker = exchange.fetch_ticker(target_ccxt)
+        # Ambil Ticker (Harga Detik Ini)
+        ticker = exchange.fetch_ticker(target)
         current_price = ticker['last']
         
-        # Ambil History Candle (untuk tren)
-        bars = exchange.fetch_ohlcv(target_ccxt, timeframe='1h', limit=50)
-        df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
-        df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=7)
-        
-        return df, current_price, "⚡ Real-Time (Binance)"
-        
-    except Exception as e:
-        # JIKA GAGAL, MASUK TARGET 2: YAHOO FINANCE (BACKUP)
-        try:
-            # Bersihkan simbol untuk Yahoo (Butuh format BTC-USD)
-            target_yf = symbol.replace("/", "-").replace("USDT", "USD").replace("IDR", "USD")
-            
-            # Download Data
-            data_yf = yf.download(target_yf, period='5d', interval='1h', progress=False)
-            
-            if len(data_yf) > 0:
-                # Perbaikan MultiIndex Yahoo
-                if isinstance(data_yf.columns, pd.MultiIndex):
-                    data_yf.columns = data_yf.columns.droplevel(1)
-                
-                # Format ulang biar sama kayak Binance
-                df = data_yf.reset_index()
-                df = df[['Datetime', 'Open', 'High', 'Low', 'Close', 'Volume']]
-                df.columns = ['time', 'open', 'high', 'low', 'close', 'vol']
-                df['time'] = df['time'] + timedelta(hours=7) # Sesuaikan WIB
-                
-                current_price = df['close'].iloc[-1]
-                return df, current_price, "⚠️ Backup (Yahoo)"
-            else:
-                return None, None, "Error"
-        except:
-            return None, None, "Error"
-
-# --- ALGORITMA PREDIKSI ---
-def analyze_forecast(symbol):
-    # 1. AMBIL DATA (Pake fungsi anti-blokir di atas)
-    df, current_price, source = get_robust_data(symbol)
+        # Ambil Candle (Untuk Analisa Grafik)
+        bars = exchange.fetch_ohlcv(target, timeframe='1h', limit=200) # Butuh 200 candle untuk EMA 200
+        if bars:
+            df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
+            df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=7) # WIB
+            df.set_index('time', inplace=True)
+            source = "⚡ Real-Time (Binance)"
+    except:
+        pass # Gagal? Lanjut ke Yahoo
     
+    # JALUR 2: YAHOO FINANCE (BACKUP)
+    if df is None:
+        try:
+            yf_sym = symbol.replace("/", "-").replace("USDT", "USD").replace("IDR", "USD")
+            data_yf = yf.download(yf_sym, period='1mo', interval='1h', progress=False)
+            if len(data_yf) > 50:
+                if isinstance(data_yf.columns, pd.MultiIndex): data_yf.columns = data_yf.columns.droplevel(1)
+                df = data_yf[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+                df.columns = ['open', 'high', 'low', 'close', 'vol']
+                df.index = df.index + timedelta(hours=7) # WIB
+                current_price = df['close'].iloc[-1]
+                source = "⚠️ Backup (Yahoo)"
+        except:
+            pass
+            
+    return df, current_price, source
+
+# --- FUNGSI 2: THE BRAIN (ANALISA) ---
+def analyze_coin(symbol):
+    df, real_price, source = get_market_data(symbol)
     if df is None: return None
     
-    # 2. HITUNG KEKUATAN GERAK (ATR)
-    # Ini ngukur seberapa jauh harga bisa lari dalam beberapa jam ke depan
-    df['tr'] = df['high'] - df['low']
-    atr = df['tr'].rolling(14).mean().iloc[-1]
+    close = df['close']
     
-    # Kalau data ATR error (misal koin baru), pakai 2% dari harga
-    if np.isnan(atr) or atr == 0: atr = current_price * 0.02
+    # 1. INDIKATOR TEKNIKAL
+    df['ema200'] = EMAIndicator(close=close, window=200).ema_indicator()
+    df['rsi'] = RSIIndicator(close=close, window=14).rsi()
+    bb = BollingerBands(close=close, window=20, window_dev=2)
+    df['bb_h'] = bb.bollinger_hband()
+    df['bb_l'] = bb.bollinger_lband()
+    df['atr'] = AverageTrueRange(high=df['high'], low=df['low'], close=close, window=14).average_true_range()
     
-    # 3. PREDIKSI 2 LANGKAH
-    # Target 1 (Aman): Harga + (0.8 x Kekuatan Gerak)
-    target_1 = current_price + (atr * 0.8)
+    # Data Terakhir
+    last_candle = df.iloc[-1]
+    rsi = df['rsi'].iloc[-1]
+    ema200 = df['ema200'].iloc[-1]
+    bb_low = df['bb_l'].iloc[-1]
+    atr = df['atr'].iloc[-1]
     
-    # Target 2 (Lanjut): Harga + (2.0 x Kekuatan Gerak)
-    target_2 = current_price + (atr * 2.0)
+    # Gunakan real_price dari Ticker jika ada (lebih akurat), jika tidak pakai close candle
+    price_now = real_price if real_price > 0 else last_candle['close']
     
-    # Stop Loss (Pengaman)
-    stop_loss = current_price - (atr * 0.6)
+    # 2. FILTER KEAMANAN (ZOMBIE & CRASH)
+    # Cek Volume (Minimal $20k sehari)
+    vol_usd = last_candle['vol'] * price_now
+    if vol_usd < 20000: return {"symbol": symbol, "status": "SKIP", "reason": "Zombie (Sepi)"}
     
-    # 4. WAKTU
-    time_now = datetime.now() + timedelta(hours=7)
-    time_s1 = time_now + timedelta(hours=3) # Est 3 jam
-    time_s2 = time_now + timedelta(hours=8) # Est 8 jam
+    # Cek Crash (Jatuh > 3% di candle terakhir)
+    drop_pct = (last_candle['open'] - price_now) / last_candle['open'] * 100
+    if drop_pct > 3.0: return {"symbol": symbol, "status": "DANGER", "reason": "Sedang Longsor (Crash)"}
+
+    # 3. LOGIKA BELI (STRATEGI GABUNGAN)
+    signal = "WAIT"
+    reason = "Sideways"
+    score = 0
     
-    # 5. KONVERSI RUPIAH
-    res = {
+    # Skenario A: Tren Naik (Diatas EMA200) + Koreksi (RSI < 50)
+    is_uptrend = price_now > ema200
+    if is_uptrend and rsi < 50:
+        signal = "BUY ON DIP"
+        reason = "✅ Tren Naik + Harga Diskon"
+        score = 85
+        
+    # Skenario B: Rebound dari Bawah (Harga nyentuh BB Bawah + RSI < 35)
+    elif price_now <= (bb_low * 1.01) and rsi < 35:
+        signal = "SNIPER ENTRY"
+        reason = "🎯 Harga di Dasar (Oversold)"
+        score = 95
+        
+    # Skenario C: Breakout (Harga nembus BB Atas + Volume Kuat)
+    # (Opsional, tapi biasanya berisiko beli di pucuk, kita skip dulu)
+
+    if score < 50: return {"symbol": symbol, "status": "WAIT", "reason": "Belum ada momen", "df": df}
+
+    # 4. TIME TRAVELER (PREDIKSI WAKTU)
+    # Estimasi waktu berdasarkan kecepatan rata-rata (ATR)
+    # Berapa lama untuk mencapai target profit?
+    target_dist = price_now * (target_profit_pct / 100)
+    speed_per_hour = atr if atr > 0 else (price_now * 0.01)
+    hours_needed = target_dist / speed_per_hour
+    
+    # Waktu
+    time_now = df.index[-1]
+    time_sell = time_now + timedelta(hours=hours_needed)
+    
+    # 5. HITUNG TARGET HARGA
+    price_idr = price_now * kurs_usd_idr
+    tp_idr = price_idr * (1 + target_profit_pct/100)
+    sl_idr = price_idr * 0.95 # Stop Loss 5%
+    profit_rp = modal_awal * (target_profit_pct/100)
+    
+    return {
+        "status": "BUY",
         "symbol": symbol,
+        "price_usd": price_now,
+        "price_idr": price_idr,
+        "tp_idr": tp_idr,
+        "sl_idr": sl_idr,
+        "profit_rp": profit_rp,
+        "time_buy": time_now,
+        "time_sell": time_sell,
+        "days": hours_needed / 24,
+        "reason": reason,
+        "score": score,
         "source": source,
-        "now_usd": current_price,
-        "now_idr": current_price * kurs_usd_idr,
-        "t1_idr": target_1 * kurs_usd_idr,
-        "t2_idr": target_2 * kurs_usd_idr,
-        "sl_idr": stop_loss * kurs_usd_idr,
-        "t1_pct": ((target_1 - current_price)/current_price)*100,
-        "t2_pct": ((target_2 - current_price)/current_price)*100,
-        "history": df,
-        "times": [time_now, time_s1, time_s2]
+        "df": df
     }
-    return res
 
 # --- UI TAMPILAN ---
-col_left, col_right = st.columns([2, 1])
+col1, col2 = st.columns([1, 3])
 
-with col_right:
-    st.subheader("🔍 Pilih Koin")
-    manual_coin = st.selectbox("Daftar Koin:", WATCHLIST, index=0)
-    
-    if st.button("Ramal Koin Ini 🔥"):
-        with st.spinner("Menghubungkan ke market..."):
-            data = analyze_forecast(manual_coin)
+with col1:
+    st.subheader("🕵️ Scanner")
+    if st.button("SCAN 30 KOIN (ACAK)", type="primary"):
+        batch = random.sample(WATCHLIST, 30)
+        results = []
+        
+        progress = st.progress(0)
+        status_txt = st.empty()
+        
+        for i, coin in enumerate(batch):
+            status_txt.caption(f"Menganalisa {coin}...")
+            res = analyze_coin(coin)
+            if res and res['status'] == "BUY":
+                results.append(res)
+            progress.progress((i+1)/30)
             
-            if data:
-                st.session_state['forecast_data'] = data
-            else:
-                st.error("Data tidak ditemukan di server manapun (Binance/Yahoo). Koin mungkin terlalu baru.")
+        status_txt.empty()
+        progress.empty()
+        
+        # SIMPAN HASIL KE SESSION STATE AGAR TIDAK HILANG SAAT KLIK LAIN
+        st.session_state['results'] = results
 
-# --- TAMPILAN HASIL ---
-if 'forecast_data' in st.session_state:
-    d = st.session_state['forecast_data']
+with col2:
+    st.subheader("📊 Hasil Analisa")
     
-    with col_left:
-        # Header Status
-        status_color = "green" if "Real-Time" in d['source'] else "orange"
-        st.caption(f"Sumber Data: :{status_color}[{d['source']}] | Update: {d['times'][0].strftime('%H:%M:%S')} WIB")
+    if 'results' in st.session_state:
+        data_list = st.session_state['results']
         
-        # METRIK BESAR
-        c1, c2, c3 = st.columns(3)
-        c1.metric("HARGA SEKARANG", f"Rp {d['now_idr']:,.0f}", f"${d['now_usd']:.5f}")
-        c2.metric("TARGET 1 (Pendek)", f"Rp {d['t1_idr']:,.0f}", f"+{d['t1_pct']:.2f}%")
-        c3.metric("TARGET 2 (Jauh)", f"Rp {d['t2_idr']:,.0f}", f"+{d['t2_pct']:.2f}%")
-        
-        # PESAN STRATEGI
-        st.info(f"""
-        **Strategi Eksekusi {d['symbol']}:**
-        1.  🟢 **BELI SEKARANG** di harga pasar (**Rp {d['now_idr']:,.0f}**).
-        2.  🟡 Jual 50% aset saat menyentuh **Rp {d['t1_idr']:,.0f}** (Amankan modal).
-        3.  🟢 Jual sisanya saat menyentuh **Rp {d['t2_idr']:,.0f}** (Cuan maksimal).
-        4.  🔴 **WAJIB CUT LOSS** jika harga turun ke **Rp {d['sl_idr']:,.0f}**.
-        """)
-        
-        # GRAFIK MASA DEPAN
-        fig = go.Figure()
-        
-        # Plot History
-        hist = d['history']
-        fig.add_trace(go.Scatter(x=hist['time'], y=hist['close']*kurs_usd_idr, mode='lines', name='Trend', line=dict(color='#00F0FF')))
-        
-        # Plot Titik Sekarang
-        fig.add_trace(go.Scatter(x=[d['times'][0]], y=[d['now_idr']], mode='markers', name='Entry', marker=dict(color='white', size=10)))
-        
-        # Plot Jalur Prediksi
-        fig.add_trace(go.Scatter(
-            x=[d['times'][0], d['times'][1], d['times'][2]], 
-            y=[d['now_idr'], d['t1_idr'], d['t2_idr']],
-            mode='lines+markers+text',
-            name='Jalur Prediksi',
-            line=dict(color='#00FF00', width=3, dash='dot'),
-            text=["", "Target 1", "Target 2"],
-            textposition="top left"
-        ))
-        
-        fig.update_layout(title=f"Peta Jalan {d['symbol']}", height=450, template="plotly_dark")
-        st.plotly_chart(fig, use_container_width=True)
+        if len(data_list) > 0:
+            # Urutkan dari Score Tertinggi
+            data_list.sort(key=lambda x: x['score'], reverse=True)
+            top = data_list[0]
+            
+            # --- KARTU REKOMENDASI UTAMA ---
+            st.success(f"💎 **PELUANG EMAS: {top['symbol']}**")
+            st.caption(f"Sumber: {top['source']} | Alasan: {top['reason']}")
+            
+            m1, m2, m3 = st.columns(3)
+            m1.metric("BELI (Sekarang)", f"Rp {top['price_idr']:,.0f}", f"${top['price_usd']:.5f}")
+            m2.metric("JUAL (Target)", f"Rp {top['tp_idr']:,.0f}", f"+{target_profit_pct}%")
+            m3.metric("STOP LOSS", f"Rp {top['sl_idr']:,.0f}", "-5%")
+            
+            st.markdown(f"#### 📅 Jadwal Trading (Estimasi)")
+            st.info(f"""
+            1.  **Waktu Beli:** SEKARANG ({top['time_buy'].strftime('%H:%M WIB')})
+            2.  **Waktu Jual:** {top['time_sell'].strftime('%A, %d %b - %H:%M WIB')} (Estimasi {top['days']:.1f} Hari)
+            3.  **Potensi Cuan:** Rp {top['profit_rp']:,.0f}
+            """)
+            
+            # --- GRAFIK VISUAL PRO (KOTAK HIJAU) ---
+            df = top['df']
+            fig = go.Figure()
+            
+            # 1. Candlestick
+            fig.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='Harga'))
+            
+            # 2. Garis Tren (EMA 200)
+            fig.add_trace(go.Scatter(x=df.index, y=df['ema200'], line=dict(color='orange', width=1), name='Tren Jangka Panjang'))
+            
+            # 3. Area Profit (Kotak Hijau)
+            fig.add_shape(type="rect",
+                x0=df.index[-1], y0=top['price_usd'],
+                x1=top['time_sell'], y1=top['tp_idr']/kurs_usd_idr,
+                fillcolor="rgba(0, 255, 0, 0.2)", line=dict(width=0),
+            )
+            
+            # 4. Area Stop Loss (Kotak Merah)
+            fig.add_shape(type="rect",
+                x0=df.index[-1], y0=top['sl_idr']/kurs_usd_idr,
+                x1=top['time_sell'], y1=top['price_usd'],
+                fillcolor="rgba(255, 0, 0, 0.2)", line=dict(width=0),
+            )
+            
+            fig.update_layout(title=f"Peta Jalan {top['symbol']} (Hijau = Area Profit)", height=500, xaxis_rangeslider_visible=False)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # --- TABEL SISA ---
+            with st.expander(f"Lihat {len(data_list)-1} Peluang Lainnya"):
+                rows = []
+                for item in data_list[1:]:
+                    rows.append([item['symbol'], f"Rp {item['price_idr']:,.0f}", f"Rp {item['tp_idr']:,.0f}", item['time_sell'].strftime('%d %b %H:%M')])
+                st.table(pd.DataFrame(rows, columns=["Koin", "Harga Beli", "Target Jual", "Waktu Jual"]))
+                
+        else:
+            st.warning("⚠️ Scanner selesai, tapi tidak ada koin yang memenuhi syarat 'AMAN & POTENSIAL' di batch ini.")
+            st.write("Saran: Pasar mungkin sedang lesu atau crash. Coba klik tombol Scan lagi untuk mengambil sampel koin yang berbeda.")
 
-# --- SCANNER CEPAT DI BAWAH ---
+# --- CEK MANUAL DI BAWAH ---
 st.write("---")
-st.subheader("⚡ Scanner Potensi (Acak 5 Koin)")
-if st.button("Cari Peluang Lain"):
-    batch = random.sample(WATCHLIST, 5)
-    cols = st.columns(5)
-    
-    for i, coin in enumerate(batch):
-        with cols[i]:
-            res = analyze_forecast(coin)
-            if res:
-                st.write(f"**{res['symbol']}**")
-                st.write(f"T1: +{res['t1_pct']:.2f}%")
-                st.write(f"T2: +{res['t2_pct']:.2f}%")
-            else:
-                st.write(f"{coin}: -")
+st.subheader("🔍 Cek Koin Manual (Pasti Muncul Data)")
+manual_coin = st.selectbox("Pilih Koin:", WATCHLIST)
+
+if st.button("Analisa Koin Ini"):
+    with st.spinner("Mengambil data..."):
+        res = analyze_coin(manual_coin)
+        
+        if res and res.get('status') == "BUY":
+            st.success(f"✅ {res['symbol']} Layak Beli! (Score: {res['score']})")
+            st.write(f"Beli: **Rp {res['price_idr']:,.0f}** | Jual: **Rp {res['tp_idr']:,.0f}**")
+            st.caption(f"Alasan: {res['reason']}")
+        elif res and res.get('status') != "BUY":
+            st.error(f"⛔ {manual_coin}: {res['reason']}")
+            if 'df' in res:
+                st.line_chart(res['df']['close'])
+        else:
+            st.error("Data error.")
