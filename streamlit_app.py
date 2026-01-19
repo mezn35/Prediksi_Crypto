@@ -13,8 +13,8 @@ import time
 import random
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(page_title="AI MASTER COMMANDER", layout="wide")
-st.title("🎛️ AI MASTER COMMANDER: Pilih Senjatamu")
+st.set_page_config(page_title="AI TRINITY COMMANDER", layout="wide")
+st.title("🎛️ AI TRINITY: Pilih Strategi Perang Anda")
 
 # --- DATABASE KOIN MICIN ---
 WATCHLIST = [
@@ -83,24 +83,25 @@ exchanges = {
 
 # --- SIDEBAR: PILIH SENJATA ---
 with st.sidebar:
-    st.header("🎮 Pilih Mode AI")
+    st.header("🎮 PILIH MODE SCANNER")
     mode_operasi = st.radio(
-        "Mau Jalankan Mode Apa?",
+        "Pilih Strategi:",
         (
-            "🔥 MODE 1: Super Agresif (Gemini)",
-            "🧠 MODE 2: Moderat Cerdas (Gemini)",
+            "🔥 MODE 1: Super Agresif (+Gemini)",
+            "🧠 MODE 2: Moderat Cerdas (+Gemini)",
             "🛡️ MODE 3: Sentinel Klasik (Tanpa AI)"
         )
     )
     
     st.divider()
     
+    # Input API Key hanya jika Mode 1 atau 2 dipilih
     if "MODE 3" not in mode_operasi:
-        st.header("🧠 Kunci Otak Gemini")
+        st.header("🧠 Otak Gemini")
         gemini_key = st.text_input("Gemini API Key", type="password")
     else:
-        gemini_key = None # Mode 3 tidak butuh Gemini
-        st.info("Mode 3 tidak butuh API Key Gemini.")
+        gemini_key = None
+        st.info("ℹ️ Mode 3 berjalan murni teknikal (Hemat API).")
 
     st.divider()
     st.header("🎛️ Kontrol")
@@ -108,7 +109,7 @@ with st.sidebar:
     target_pct = st.slider("Target Cuan (%)", 2.0, 50.0, 5.0)
     kurs_usd = st.number_input("Kurs USD", value=16200)
 
-# --- FUNGSI 1: SENTIMEN SOSIAL ---
+# --- FUNGSI 1: SENTIMEN SOSIAL (FEAR & GREED) ---
 def get_social_sentiment():
     try:
         url = "https://api.alternative.me/fng/"
@@ -118,13 +119,14 @@ def get_social_sentiment():
     except:
         return 50, "Neutral"
 
-# --- FUNGSI 2: ASK GEMINI (DENGAN DETEKSI ERROR) ---
+# --- FUNGSI 2: ASK GEMINI (DIPERBAIKI) ---
 def ask_gemini(symbol, price, rsi, trend_status, mode, sentiment_text):
     if not gemini_key: return "⚠️ API Key Kosong"
     
     try:
         genai.configure(api_key=gemini_key)
-        model = genai.GenerativeModel('gemini-pro')
+        # PERBAIKAN: Menggunakan model 'gemini-1.5-flash' yang lebih baru & stabil
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
         prompt = f"""
         Role: Crypto Sniper. Context: Coin {symbol}, Price ${price}, RSI {rsi:.1f}, Trend {trend_status}.
@@ -134,7 +136,7 @@ def ask_gemini(symbol, price, rsi, trend_status, mode, sentiment_text):
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"Gemini Error: {str(e)}" # INI AKAN KASIH TAU ERRORNYA APA
+        return f"Gemini Error: {str(e)}"
 
 # --- FUNGSI 3: DATA ENGINE ---
 def get_data(symbol):
@@ -165,7 +167,7 @@ def get_data(symbol):
         except: pass
     return df, source
 
-# --- ANALISA UTAMA ---
+# --- ANALISA UTAMA (3 MODE) ---
 def analyze_market(symbol, mode_choice, sent_idx, sent_text):
     df, source = get_data(symbol)
     if df is None: return None
@@ -174,6 +176,7 @@ def analyze_market(symbol, mode_choice, sent_idx, sent_text):
     curr = close.iloc[-1]
     
     df['ema200'] = EMAIndicator(close=close, window=200).ema_indicator()
+    df['ema50'] = EMAIndicator(close=close, window=50).ema_indicator()
     df['rsi'] = RSIIndicator(close=close, window=14).rsi()
     
     rsi = df['rsi'].iloc[-1]
@@ -183,26 +186,28 @@ def analyze_market(symbol, mode_choice, sent_idx, sent_text):
     res = None
     gemini_msg = "-"
     
-    # === LOGIKA MODE 1: SUPER AGRESIF ===
+    # === LOGIKA MODE 1: SUPER AGRESIF (GEMINI) ===
+    # Mencari Pantulan (Rebound) di saat harga hancur.
     if "MODE 1" in mode_choice:
-        # Syarat: RSI < 35 (Diskon) - Tidak peduli tren
+        # Syarat Longgar: RSI < 35 (Sudah Murah). Tidak peduli tren.
         if rsi < 35:
             gemini_msg = ask_gemini(symbol, curr, rsi, trend, "AGRESIF", sent_text)
-            res = {"type": "🔥 AGRESIF", "reason": "RSI Oversold"}
+            res = {"type": "🔥 AGRESIF", "reason": "RSI Oversold (Pantulan)"}
 
-    # === LOGIKA MODE 2: MODERAT CERDAS ===
+    # === LOGIKA MODE 2: MODERAT CERDAS (GEMINI) ===
+    # Mencari Tren Sehat.
     elif "MODE 2" in mode_choice:
-        # Syarat: Uptrend (Harga > EMA200) + RSI < 55
+        # Syarat: Harga > EMA200 (Wajib Uptrend) DAN RSI < 55 (Koreksi)
         if curr > ema200 and rsi < 55:
             gemini_msg = ask_gemini(symbol, curr, rsi, trend, "MODERAT", sent_text)
             res = {"type": "🧠 MODERAT", "reason": "Uptrend + Diskon"}
 
-    # === LOGIKA MODE 3: SENTINEL KLASIK ===
+    # === LOGIKA MODE 3: SENTINEL KLASIK (TANPA AI) ===
+    # Murni Teknikal, Cepat, Tanpa Gemini.
     elif "MODE 3" in mode_choice:
-        # Syarat: Uptrend (Harga > EMA200) + RSI < 45 (Lebih ketat)
-        # Tanpa Gemini, langsung sinyal
-        if curr > ema200 and rsi < 45:
-            res = {"type": "🛡️ SENTINEL", "reason": "Pure Technical Uptrend"}
+        # Syarat Ketat: Harga > EMA200 DAN Harga > EMA50 DAN RSI < 45
+        if curr > ema200 and curr > df['ema50'].iloc[-1] and rsi < 45:
+            res = {"type": "🛡️ SENTINEL", "reason": "Pure Technical Setup"}
             gemini_msg = "Non-Aktif (Mode Klasik)"
 
     # JIKA KETEMU HASIL
@@ -218,27 +223,28 @@ def analyze_market(symbol, mode_choice, sent_idx, sent_text):
 
 # --- UI UTAMA ---
 sent_val, sent_text = get_social_sentiment()
-st.metric("Sentimen Pasar", f"{sent_val}/100", sent_text)
+st.metric("Sentimen Pasar (Fear/Greed)", f"{sent_val}/100", sent_text)
 
-# INDIKATOR MODE AKTIF
-st.info(f"Sistem Berjalan di: **{mode_operasi}**")
+# INDIKATOR MODE
+st.info(f"🚀 SEDANG MENJALANKAN: **{mode_operasi}**")
 
 monitor_ph = st.empty()
 result_ph = st.empty()
 
 if run_sentinel:
-    # Cek Wajib API Key untuk Mode 1 & 2
+    # Validasi Key Gemini jika Mode 1 atau 2
     if "MODE 3" not in mode_operasi and not gemini_key:
-        st.error("⚠️ API Key Gemini WAJIB diisi untuk Mode ini!")
+        st.error("⚠️ API Key Gemini WAJIB diisi untuk Mode 1 & 2!")
     else:
         while True:
+            # Ambil 5 koin acak
             batch = random.sample(WATCHLIST, 5)
             with monitor_ph.container():
-                st.write(f"Scanning ({mode_operasi}): {', '.join(batch)} ...")
+                st.write(f"Scanning {', '.join(batch)} ...")
                 
                 for coin in batch:
                     res = analyze_market(coin, mode_operasi, sent_val, sent_text)
-                    time.sleep(1)
+                    time.sleep(1) # Jeda manusia
                     
                     if res:
                         # BUNYIKAN ALARM
@@ -254,16 +260,22 @@ if run_sentinel:
                                 st.info(f"🤖 **Kata Gemini:** {res['gemini']}")
                             
                             c1, c2 = st.columns(2)
-                            c1.metric("BELI", f"${res['entry']:.5f}", f"RSI: {res['rsi']:.1f}")
-                            c2.metric("JUAL", f"${res['tp']:.5f}")
+                            c1.metric("BELI SEKARANG", f"${res['entry']:.5f}", f"RSI: {res['rsi']:.1f}")
+                            c2.metric("JUAL NANTI", f"${res['tp']:.5f}", f"+{target_pct}%")
                             
+                            # Grafik
                             fig = go.Figure()
                             df = res['df']
                             fig.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close']))
                             fig.add_trace(go.Scatter(x=df.index, y=df['ema200'], line=dict(color='orange'), name='EMA 200'))
+                            
+                            # Kotak Target
+                            fig.add_shape(type="rect", x0=df.index[-1], y0=res['entry'], x1=df.index[-1]+timedelta(hours=12), y1=res['tp'], fillcolor="rgba(0,255,0,0.2)", line=dict(width=0))
+                            
                             st.plotly_chart(fig, use_container_width=True)
                             
-                            st.stop()
+                            st.warning("Matikan centang 'Pos Ronda' untuk scan ulang.")
+                            st.stop() # Freeze layar
             
             time.sleep(5)
 else:
