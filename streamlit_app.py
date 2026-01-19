@@ -2,174 +2,189 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import ccxt
+import yfinance as yf
 import plotly.graph_objects as go
 from ta.trend import EMAIndicator
 from datetime import datetime, timedelta
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(page_title="AI VISUAL PRO", layout="wide")
-st.title("📈 AI VISUAL PRO: Trend Strategy")
+st.set_page_config(page_title="AI VISUAL PRO (ANTI-BLOKIR)", layout="wide")
+st.title("📈 AI VISUAL PRO: TradingView Style")
 st.markdown("""
-**Fokus Tahap 1: Visualisasi Akurat**
-Aplikasi ini meniru gaya TradingView untuk menampilkan area **Target Profit (Hijau)** dan **Stop Loss (Merah)** berdasarkan strategi tren EMA.
+**Fitur Lengkap:**
+1.  🛡️ **Anti-Blokir:** Otomatis pakai Yahoo Finance jika Binance memblokir server.
+2.  🎯 **Visual Pro:** Area Target (Hijau) dan Stop Loss (Merah).
+3.  🧠 **Strategi Tren:** Hanya sinyal saat tren EMA valid.
 """)
 
-# --- DATABASE KOIN (Disederhanakan untuk Fokus Akurasi) ---
+# --- DATABASE KOIN ---
 WATCHLIST = [
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT",
     "DOGE/USDT", "AVAX/USDT", "LINK/USDT", "DOT/USDT", "MATIC/USDT",
     "SHIB/USDT", "PEPE/USDT", "WIF/USDT", "BONK/USDT", "FLOKI/USDT",
-    "NEAR/USDT", "RNDR/USDT", "FET/USDT", "INJ/USDT", "OP/USDT", "ARB/USDT"
+    "NEAR/USDT", "RNDR/USDT", "FET/USDT", "INJ/USDT", "OP/USDT", "ARB/USDT",
+    "JASMY/USDT", "LUNC/USDT", "SLP/USDT", "GALA/USDT", "FTM/USDT"
 ]
 
-# Inisialisasi Binance (Real-Time Accuracy)
+# Inisialisasi Binance
 exchange = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'spot'}})
 
-# --- SIDEBAR PENGATURAN ---
+# --- SIDEBAR ---
 with st.sidebar:
-    st.header("⚙️ Parameter Strategi")
-    # Risk Reward Ratio 1:2 artinya siap rugi 1 untuk dapat 2
-    rr_ratio = st.number_input("Risk/Reward Ratio (Contoh 2.0 = Target 2x Lipat Risiko)", value=2.0, step=0.5, min_value=1.0)
-    risk_pct = st.slider("Risiko per Trade (%) (Jarak Stop Loss)", 1.0, 5.0, 2.0) / 100
+    st.header("⚙️ Pengaturan")
+    rr_ratio = st.number_input("Risk/Reward Ratio", value=2.0, step=0.5)
+    risk_pct = st.slider("Risiko Stop Loss (%)", 1.0, 5.0, 3.0) / 100
     st.divider()
-    selected_coin = st.selectbox("Pilih Koin untuk Dianalisa:", WATCHLIST)
+    selected_coin = st.selectbox("Pilih Koin:", WATCHLIST)
 
-# --- FUNGSI 1: AMBIL DATA REAL-TIME ---
-def get_data(symbol, timeframe='1h'):
+# --- FUNGSI DATA (ANTI-BLOKIR / HYBRID) ---
+def get_data_robust(symbol):
+    df = None
+    source = ""
+    
+    # 1. COBA BINANCE
     try:
-        bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=300)
-        df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
-        df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=7) # WIB
-        df.set_index('time', inplace=True)
-        return df
-    except Exception as e:
-        st.error(f"Gagal mengambil data dari Binance: {e}")
-        return None
+        bars = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=300)
+        if bars:
+            df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
+            df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=7) # WIB
+            df.set_index('time', inplace=True)
+            source = "⚡ Binance (Real-Time)"
+    except:
+        pass # Jika error 451/blokir, lanjut ke bawah
 
-# --- FUNGSI 2: HITUNG STRATEGI (PREDIKSI) ---
+    # 2. COBA YAHOO (BACKUP)
+    if df is None:
+        try:
+            # Ubah format BTC/USDT -> BTC-USD
+            yf_sym = symbol.replace("/", "-").replace("USDT", "USD")
+            data_yf = yf.download(yf_sym, period='1mo', interval='1h', progress=False)
+            
+            if len(data_yf) > 50:
+                if isinstance(data_yf.columns, pd.MultiIndex): data_yf.columns = data_yf.columns.droplevel(1)
+                df = data_yf[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+                df.columns = ['open', 'high', 'low', 'close', 'vol']
+                df.index = df.index + timedelta(hours=7) # WIB
+                source = "⚠️ Yahoo Finance (Backup)"
+        except Exception as e:
+            st.error(f"Yahoo Error: {e}")
+
+    return df, source
+
+# --- LOGIKA STRATEGI ---
 def calculate_strategy(df, risk_per_trade, reward_ratio):
     close = df['close']
     
-    # Indikator Tren: EMA 50 (Cepat) dan EMA 200 (Lambat)
+    # Indikator
     df['ema50'] = EMAIndicator(close=close, window=50).ema_indicator()
     df['ema200'] = EMAIndicator(close=close, window=200).ema_indicator()
     
     current_price = close.iloc[-1]
-    ema50_now = df['ema50'].iloc[-1]
-    ema200_now = df['ema200'].iloc[-1]
+    ema50 = df['ema50'].iloc[-1]
+    ema200 = df['ema200'].iloc[-1]
     
-    # LOGIKA: Hanya Buy jika Harga > EMA50 > EMA200 (Strong Uptrend)
-    trend = "NETRAL/DOWN"
     signal_data = None
+    trend_status = "NETRAL"
     
-    if current_price > ema50_now and ema50_now > ema200_now:
-        trend = "UPTREND (Kuat)"
+    # Syarat Buy: Harga > EMA 50 > EMA 200 (Uptrend Sehat)
+    if current_price > ema50 and ema50 > ema200:
+        trend_status = "UPTREND (BULLISH)"
         
-        # Hitung Level Kunci
-        entry_price = current_price
-        # Stop Loss ditaruh di bawah EMA 50 atau berdasarkan persentase risiko
-        stop_loss_price = entry_price * (1 - risk_per_trade)
-        
-        risk_amount = entry_price - stop_loss_price
-        target_price = entry_price + (risk_amount * reward_ratio)
-        
-        pct_gain = ((target_price - entry_price) / entry_price) * 100
-        pct_loss = ((stop_loss_price - entry_price) / entry_price) * 100
+        entry = current_price
+        sl = entry * (1 - risk_per_trade) # Stop Loss di bawah
+        risk = entry - sl
+        tp = entry + (risk * reward_ratio) # Target Profit
         
         signal_data = {
-            "entry": entry_price,
-            "tp": target_price,
-            "sl": stop_loss_price,
-            "gain_pct": pct_gain,
-            "loss_pct": pct_loss
+            "entry": entry,
+            "sl": sl,
+            "tp": tp,
+            "risk_pct": risk_per_trade * 100,
+            "reward_pct": (risk_per_trade * reward_ratio) * 100
         }
+    elif current_price < ema200:
+        trend_status = "DOWNTREND (BEARISH)"
         
-    return df, trend, signal_data
+    return df, trend_status, signal_data
 
-# --- FUNGSI 3: VISUALISASI (MENIRU GAMBAR ANDA) ---
-def plot_visual_pro(df, signal_data, coin_name):
+# --- VISUALISASI PRO (KOTAK HIJAU/MERAH) ---
+def plot_chart(df, signal, symbol):
     fig = go.Figure()
 
-    # 1. Candlestick Chart
+    # Candlestick
     fig.add_trace(go.Candlestick(
         x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close'],
         name='Harga'
     ))
 
-    # 2. Garis EMA (Indikator Tren)
-    fig.add_trace(go.Scatter(x=df.index, y=df['ema50'], line=dict(color='yellow', width=1), name='EMA 50'))
+    # EMA Lines
+    fig.add_trace(go.Scatter(x=df.index, y=df['ema50'], line=dict(color='orange', width=1), name='EMA 50'))
     fig.add_trace(go.Scatter(x=df.index, y=df['ema200'], line=dict(color='blue', width=2), name='EMA 200 (Tren Utama)'))
 
-    # JIKA ADA SINYAL BUY, GAMBAR KOTAK HIJAU/MERAH
-    if signal_data:
-        entry = signal_data['entry']
-        tp = signal_data['tp']
-        sl = signal_data['sl']
-        
-        # Waktu terakhir + masa depan (untuk menggambar kotak)
+    if signal:
+        # Waktu
         last_time = df.index[-1]
-        future_time = last_time + timedelta(hours=24) # Gambar kotak sampai besok
+        future_time = last_time + timedelta(hours=12) # Gambar kotak ke kanan
         
-        # KOTAK HIJAU (PROFIT ZONE)
+        entry = signal['entry']
+        tp = signal['tp']
+        sl = signal['sl']
+        
+        # KOTAK HIJAU (PROFIT)
         fig.add_shape(type="rect",
             x0=last_time, y0=entry, x1=future_time, y1=tp,
-            fillcolor="rgba(0, 255, 0, 0.3)", line=dict(color="green", width=2),
+            fillcolor="rgba(0, 255, 0, 0.2)", line=dict(width=1, color="green"),
         )
         
-        # KOTAK MERAH (LOSS ZONE)
+        # KOTAK MERAH (LOSS)
         fig.add_shape(type="rect",
             x0=last_time, y0=sl, x1=future_time, y1=entry,
-            fillcolor="rgba(255, 0, 0, 0.3)", line=dict(color="red", width=2),
+            fillcolor="rgba(255, 0, 0, 0.2)", line=dict(width=1, color="red"),
         )
         
-        # Label Harga di Kanan
-        fig.add_annotation(x=future_time, y=tp, text=f"Target: ${tp:.4f}", showarrow=False, xanchor="left", font=dict(color="green"))
-        fig.add_annotation(x=future_time, y=entry, text=f"Entry: ${entry:.4f}", showarrow=False, xanchor="left")
-        fig.add_annotation(x=future_time, y=sl, text=f"Stop Loss: ${sl:.4f}", showarrow=False, xanchor="left", font=dict(color="red"))
+        # Label Teks
+        fig.add_annotation(x=future_time, y=tp, text=f"TARGET: ${tp:.4f}", showarrow=False, font=dict(color="green"))
+        fig.add_annotation(x=future_time, y=sl, text=f"STOP LOSS: ${sl:.4f}", showarrow=False, font=dict(color="red"))
 
-    # Styling agar mirip TradingView
     fig.update_layout(
-        title=f"Analisa Visual: {coin_name}",
-        yaxis_title='Harga (USDT)',
+        title=f"Analisa {symbol}", 
+        yaxis_title="Harga (USDT)", 
         xaxis_rangeslider_visible=False,
         height=600,
-        template="plotly_dark",
-        showlegend=True
+        template="plotly_dark"
     )
-    
     return fig
 
-# --- LOGIKA UTAMA ---
-if st.button("▶️ ANALISA SEKARANG", type="primary"):
-    with st.spinner(f"Mengambil data Real-Time {selected_coin}..."):
-        # 1. Ambil Data
-        df_raw = get_data(selected_coin)
+# --- UI UTAMA ---
+if st.button("🚀 ANALISA SEKARANG", type="primary"):
+    with st.spinner(f"Mengambil data {selected_coin} (Mencoba jalur anti-blokir)..."):
         
-        if df_raw is not None and len(df_raw) > 200:
+        # 1. Ambil Data (Robust)
+        df_raw, source_name = get_data_robust(selected_coin)
+        
+        if df_raw is not None and len(df_raw) > 100:
+            st.success(f"Data Berhasil Diambil dari: **{source_name}**")
+            
             # 2. Hitung Strategi
-            df_calc, trend_status, signal = calculate_strategy(df_raw, risk_pct, rr_ratio)
+            df_calc, trend, sig = calculate_strategy(df_raw, risk_pct, rr_ratio)
             
-            # 3. Tampilkan Hasil
-            col_res, col_chart = st.columns([1, 3])
+            # 3. Tampilkan
+            c1, c2 = st.columns([1, 3])
             
-            with col_res:
-                st.subheader("Hasil Analisa")
-                st.write(f"Status Tren: **{trend_status}**")
-                
-                if signal:
-                    st.success("✅ SINYAL BUY TERKONFIRMASI")
-                    st.metric("ENTRY (Beli)", f"${signal['entry']:.4f}")
-                    st.metric("TARGET (Jual)", f"${signal['tp']:.4f}", delta=f"+{signal['gain_pct']:.2f}%")
-                    st.metric("STOP LOSS", f"${signal['sl']:.4f}", delta=f"{signal['loss_pct']:.2f}%", delta_color="inverse")
-                    st.info(f"Rasio Risk:Reward = 1 : {rr_ratio}")
+            with c1:
+                st.metric("Status Tren", trend)
+                if sig:
+                    st.success("✅ SINYAL BUY VALID")
+                    st.write(f"**Entry:** ${sig['entry']:.4f}")
+                    st.write(f"**Target:** ${sig['tp']:.4f} (+{sig['reward_pct']:.1f}%)")
+                    st.write(f"**Stop Loss:** ${sig['sl']:.4f} (-{sig['risk_pct']:.1f}%)")
                 else:
-                    st.warning("⛔ BELUM ADA SINYAL BUY")
-                    st.write("Alasan: Harga masih di bawah garis tren (EMA), atau tren belum kuat. Jangan masuk dulu.")
-                    
-            with col_chart:
-                # 4. Gambar Grafik Visual
-                fig = plot_visual_pro(df_calc, signal, selected_coin)
-                st.plotly_chart(fig, use_container_width=True)
+                    st.warning("⛔ TIDAK ADA SINYAL")
+                    st.write("Harga belum memenuhi syarat Tren Naik Kuat (EMA 50 > EMA 200).")
+            
+            with c2:
+                chart = plot_chart(df_calc, sig, selected_coin)
+                st.plotly_chart(chart, use_container_width=True)
                 
         else:
-            st.error("Data tidak cukup untuk analisa tren jangka panjang.")
+            st.error("Gagal mengambil data. Server mungkin sedang maintenance atau koin tidak ditemukan di Yahoo/Binance.")
