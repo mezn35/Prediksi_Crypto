@@ -13,16 +13,16 @@ import time
 import random
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(page_title="AI DUAL ENGINE PRO", layout="wide")
-st.title("🧠 AI DUAL ENGINE: Agresif vs Moderat")
+st.set_page_config(page_title="THE ULTIMATE SENTINEL", layout="wide")
+st.title("🚨 THE ULTIMATE SENTINEL: Dual Engine + Gemini + Pos Ronda")
 st.markdown("""
-**Sistem 2 Jalur:**
-1.  🔥 **SUPER AGRESIF:** Mencari koin *Oversold* parah (RSI < 25). Target: Pantulan Cepat (Rebound).
-2.  🛡️ **MODERAT (AKURAT):** Mencari koin *Uptrend* yang sedang diskon. Target: Ikut Tren (Follow Trend).
-3.  🌐 **Social & Gemini:** Semua sinyal divalidasi oleh Sentimen Internet & Otak AI.
+**Sistem Pertahanan 3 Lapis:**
+1.  🔥 **Super Agresif:** Mencari koin hancur (RSI < 25) untuk serok bawah.
+2.  🛡️ **Moderat (Akurat):** Mencari koin uptrend (EMA 200) yang sedang diskon.
+3.  🤖 **Gemini & Sosmed:** Validasi logika AI Google + Sentimen Pasar (Fear/Greed).
 """)
 
-# --- DATABASE KOIN ---
+# --- DATABASE KOIN MICIN ---
 WATCHLIST = [
     "HEI/USDT", "BROCCOLI714/USDT", "PENGU/USDT", "BIO/USDT", "A2Z/USDT", 
     "VELODROME/USDT", "1000CHEEMS/USDT", "TURTLE/USDT", "MDT/USDT", "ACA/USDT", 
@@ -89,58 +89,52 @@ exchanges = {
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.header("🧠 Otak Gemini")
+    st.header("🧠 Otak Gemini (Wajib)")
     gemini_key = st.text_input("Gemini API Key", type="password")
     
     st.divider()
-    st.header("🎛️ Kontrol")
-    run_sentinel = st.checkbox("🔴 AKTIFKAN POS RONDA", value=False)
-    target_pct = st.slider("Target Profit (%)", 2.0, 50.0, 5.0)
+    st.header("🎛️ Kontrol Pos Ronda")
+    run_sentinel = st.checkbox("🔴 AKTIFKAN POS RONDA (AUTO)", value=False)
+    
+    st.write("---")
+    target_pct = st.slider("Target Cuan (%)", 2.0, 50.0, 5.0)
     kurs_usd = st.number_input("Kurs USD", value=16200)
 
-# --- FUNGSI SENTIMEN SOSIAL ---
+# --- FUNGSI 1: SENTIMEN SOSIAL/INTERNET ---
 def get_social_sentiment():
     try:
         url = "https://api.alternative.me/fng/"
         response = requests.get(url)
         data = response.json()
-        return int(data['data'][0]['value']), data['data'][0]['value_classification']
+        value = int(data['data'][0]['value'])
+        status = data['data'][0]['value_classification']
+        return value, status
     except:
         return 50, "Neutral"
 
-# --- FUNGSI GEMINI (DUAL MODE) ---
+# --- FUNGSI 2: ASK GEMINI ---
 def ask_gemini(symbol, price, rsi, trend_status, mode, sentiment_text):
-    if not gemini_key: return "⚠️ Pasang API Key dulu."
+    if not gemini_key: return "⚠️ API Key Gemini belum diisi."
     
     try:
         genai.configure(api_key=gemini_key)
         model = genai.GenerativeModel('gemini-pro')
         
-        if mode == "AGRESIF":
-            prompt = f"""
-            Role: Crypto Sniper.
-            Context: Analyzing {symbol}. Market Sentiment is {sentiment_text}.
-            Data: Price ${price}, RSI {rsi:.1f} (Very Low), Trend: {trend_status}.
-            
-            Question: This is a falling knife / heavy dip. Is this a potential REBOUND/BOUNCE opportunity?
-            Answer YES or NO first, then explain risk (High/Extreme). Be brief.
-            """
-        else: # MODERAT
-            prompt = f"""
-            Role: Conservative Trader.
-            Context: Analyzing {symbol}. Market Sentiment is {sentiment_text}.
-            Data: Price ${price}, RSI {rsi:.1f}, Trend: {trend_status}.
-            
-            Question: Is this a healthy dip in an uptrend? Is it safe to enter?
-            Answer YES or NO first. Be brief.
-            """
-            
+        prompt = f"""
+        Role: Crypto Expert.
+        Coin: {symbol}. Price: ${price}. RSI: {rsi:.1f}. Trend: {trend_status}.
+        Market Sentiment (Social Media/News): {sentiment_text}.
+        Mode: {mode} (Aggressive/Moderate).
+        
+        Question: Based on Technicals + Market Sentiment, is this a good buy? 
+        Answer YES/NO and give 1 short reason.
+        """
         response = model.generate_content(prompt)
         return response.text
     except:
         return "Gemini Error."
 
-# --- FUNGSI DATA ---
+# --- FUNGSI 3: GET DATA (ROBUST) ---
 def get_data(symbol):
     pair = symbol.replace("/IDR", "/USDT")
     df = None
@@ -166,8 +160,8 @@ def get_data(symbol):
         except: pass
     return df
 
-# --- CORE LOGIC: DUAL ENGINE ---
-def analyze_dual_engine(symbol, sent_idx, sent_text):
+# --- FUNGSI 4: DUAL ENGINE LOGIC ---
+def analyze_dual_engine(symbol, sent_val, sent_text):
     df = get_data(symbol)
     if df is None: return None
     
@@ -180,94 +174,104 @@ def analyze_dual_engine(symbol, sent_idx, sent_text):
     rsi = df['rsi'].iloc[-1]
     ema200 = df['ema200'].iloc[-1]
     
-    trend_status = "UPTREND" if curr > ema200 else "DOWNTREND"
+    trend = "UPTREND" if curr > ema200 else "DOWNTREND"
     
-    result = None
+    res = None
     
-    # --- MESIN 1: SUPER AGRESIF (Cari Pantulan/Rebound) ---
-    # Syarat: RSI Hancur (< 30) atau (< 35 jika pasar Fear)
-    limit_rsi = 35 if sent_idx < 40 else 30
+    # --- ENGINE 1: SUPER AGRESIF (Serok Bawah) ---
+    # Jika pasar FEAR (Sentimen < 40), RSI harus < 30.
+    # Jika pasar NORMAL, RSI harus < 25 (Lebih ketat).
+    limit_rsi = 30 if sent_val < 40 else 25
     
     if rsi < limit_rsi:
-        gemini_says = ask_gemini(symbol, curr, rsi, trend_status, "AGRESIF", sent_text)
-        result = {
-            "type": "🔥 AGRESIF",
+        gemini = ask_gemini(symbol, curr, rsi, trend, "AGRESIF", sent_text)
+        res = {
+            "type": "🔥 SUPER AGRESIF",
             "symbol": symbol,
             "entry": curr,
-            "tp": curr * (1 + (target_pct*2)/100), # Target profit lebih besar krn risiko besar
+            "tp": curr * (1 + (target_pct*2)/100), # Target tinggi
             "rsi": rsi,
-            "gemini": gemini_says,
+            "gemini": gemini,
             "df": df
         }
         
-    # --- MESIN 2: MODERAT (Cari Tren Aman) ---
-    # Syarat: Harga > EMA200 DAN RSI < 55 (Koreksi Wajar)
+    # --- ENGINE 2: MODERAT (Akurat) ---
+    # Syarat: Harga > EMA200 DAN RSI < 55
     elif curr > ema200 and rsi < 55:
-        gemini_says = ask_gemini(symbol, curr, rsi, trend_status, "MODERAT", sent_text)
-        result = {
-            "type": "🛡️ MODERAT",
+        gemini = ask_gemini(symbol, curr, rsi, trend, "MODERAT", sent_text)
+        res = {
+            "type": "🛡️ MODERAT (AMAN)",
             "symbol": symbol,
             "entry": curr,
             "tp": curr * (1 + target_pct/100),
             "rsi": rsi,
-            "gemini": gemini_says,
+            "gemini": gemini,
             "df": df
         }
         
-    return result
+    return res
 
-# --- UI TAMPILAN ---
+# --- FUNGSI ALARM ---
+def play_alarm():
+    audio_html = """<audio autoplay><source src="https://www.soundjay.com/buttons/sounds/button-37.mp3" type="audio/mpeg"></audio>"""
+    st.markdown(audio_html, unsafe_allow_html=True)
+
+# --- UI UTAMA ---
 sent_val, sent_text = get_social_sentiment()
-st.metric("Sentimen Sosial (Fear/Greed)", f"{sent_val}/100", sent_text)
+st.metric("Sentimen Internet (News/Social)", f"{sent_val}/100", sent_text)
 
-# Tabs untuk memisahkan hasil
-tab1, tab2 = st.tabs(["🔥 HASIL SUPER AGRESIF", "🛡️ HASIL MODERAT"])
+monitor_ph = st.empty()
+result_ph = st.empty()
 
-monitor_text = st.empty()
-
+# --- POS RONDA LOOP ---
 if run_sentinel:
     if not gemini_key:
-        st.error("⚠️ Masukkan API Key Gemini dulu di menu kiri!")
+        st.error("⚠️ Masukkan API Key Gemini dulu di Sidebar!")
     else:
         while True:
+            # Ambil 5 koin acak
             batch = random.sample(WATCHLIST, 5)
-            with monitor_text.container():
-                st.info(f"Scanning Dual Engine: {', '.join(batch)} ...")
+            
+            with monitor_ph.container():
+                st.info(f"🔄 Pos Ronda (Dual Engine) sedang scan: {', '.join(batch)} ...")
                 
                 for coin in batch:
                     res = analyze_dual_engine(coin, sent_val, sent_text)
-                    time.sleep(1) # Jeda manusia
                     
                     if res:
-                        # BUNYIKAN ALARM
-                        audio_html = """<audio autoplay><source src="https://www.soundjay.com/buttons/sounds/button-37.mp3" type="audio/mpeg"></audio>"""
-                        st.markdown(audio_html, unsafe_allow_html=True)
+                        # KETEMU!
+                        play_alarm()
                         
-                        # TAMPILKAN DI TAB YANG SESUAI
-                        if "AGRESIF" in res['type']:
-                            with tab1:
-                                st.success(f"🚨 **DITEMUKAN: {res['symbol']}**")
-                                st.warning(f"🤖 Gemini: {res['gemini']}")
-                                st.metric("Harga Entry (Serok)", f"${res['entry']:.5f}", f"RSI: {res['rsi']:.1f}")
+                        with result_ph.container():
+                            if "AGRESIF" in res['type']:
+                                st.error(f"🚨 {res['type']}: {res['symbol']}")
+                            else:
+                                st.success(f"🚨 {res['type']}: {res['symbol']}")
                                 
-                                fig = go.Figure()
-                                fig.add_trace(go.Candlestick(x=res['df'].index, open=res['df']['open'], high=res['df']['high'], low=res['df']['low'], close=res['df']['close']))
-                                st.plotly_chart(fig, use_container_width=True)
-                                
-                        else:
-                            with tab2:
-                                st.success(f"✅ **DITEMUKAN: {res['symbol']}**")
-                                st.info(f"🤖 Gemini: {res['gemini']}")
-                                st.metric("Harga Entry (Aman)", f"${res['entry']:.5f}", f"RSI: {res['rsi']:.1f}")
-                                
-                                fig = go.Figure()
-                                fig.add_trace(go.Candlestick(x=res['df'].index, open=res['df']['open'], high=res['df']['high'], low=res['df']['low'], close=res['df']['close']))
-                                fig.add_trace(go.Scatter(x=res['df'].index, y=res['df']['ema200'], line=dict(color='orange'), name='EMA 200'))
-                                st.plotly_chart(fig, use_container_width=True)
-                        
-                        st.stop() # Berhenti jika ketemu
+                            st.info(f"🧠 **Analisa Gemini:** {res['gemini']}")
+                            
+                            c1, c2 = st.columns(2)
+                            c1.metric("BELI SEKARANG", f"${res['entry']:.6f}", f"Rp {res['entry']*kurs_usd:,.0f}")
+                            c2.metric("JUAL NANTI", f"${res['tp']:.6f}")
+                            
+                            # Grafik
+                            fig = go.Figure()
+                            df = res['df']
+                            fig.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close']))
+                            fig.add_trace(go.Scatter(x=df.index, y=df['ema200'], line=dict(color='orange'), name='EMA 200'))
+                            
+                            # Kotak Target
+                            fig.add_shape(type="rect", x0=df.index[-1], y0=res['entry'], x1=df.index[-1]+timedelta(hours=12), y1=res['tp'], fillcolor="rgba(0,255,0,0.2)", line=dict(width=0))
+                            
+                            st.plotly_chart(fig, use_container_width=True)
+                            
+                            st.warning("Matikan centang 'Pos Ronda' untuk scan ulang.")
+                            st.stop() # Freeze layar
+                            
+                    time.sleep(1) # Jeda antar koin
             
-            time.sleep(5) # Istirahat antar batch
+            # Jeda antar batch biar ga diblokir
+            time.sleep(5)
 
 else:
-    monitor_text.info("Centang **AKTIFKAN POS RONDA** untuk menyalakan Dua Mesin sekaligus.")
+    monitor_ph.info("👈 Centang **'AKTIFKAN POS RONDA'** di menu kiri untuk memulai Auto-Scan 24 Jam.")
