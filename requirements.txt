@@ -6,4 +6,4 @@ yfinance
 plotly
 ta
 requests
-google-generativeai
+google-generativeai>=0.7.0
