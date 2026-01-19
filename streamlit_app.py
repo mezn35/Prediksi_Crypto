@@ -5,20 +5,21 @@ import ccxt
 import yfinance as yf
 import plotly.graph_objects as go
 from ta.trend import EMAIndicator
+from ta.momentum import RSIIndicator
 from datetime import datetime, timedelta
 import random
 
-# --- KONFIGURASI HALAMAN ---
-st.set_page_config(page_title="AI MICIN HUNTER", layout="wide")
-st.title("🦐 AI MICIN HUNTER: Auto-Pilot (< Rp 10k)")
+# --- KONFIGURASI ---
+st.set_page_config(page_title="AI MICIN PRO V5", layout="wide")
+st.title("🦐 AI MICIN PRO: Multi-Server + Ghost Projection")
 st.markdown("""
-**Spesifikasi Khusus:**
-1.  🚫 **No Whale Coins:** BTC, ETH, dan koin mahal lainnya DIBLOKIR.
-2.  🎯 **Fokus Micin:** Hanya scan daftar koin murah pilihan Anda.
-3.  🚀 **Strategi:** Mencari koin murah yang sedang **UPTREND** (Siap Terbang).
+**Upgrade Akurasi:**
+1.  📡 **Multi-Exchange:** Cek Binance -> Gate.io -> MEXC (Cari data Real-Time di mana saja).
+2.  👻 **Ghost Projection:** Jika terpaksa pakai data delay, AI memproyeksikan harga sekarang berdasarkan momentum (Garis Putus-Putus).
+3.  🎯 **Visual Pro:** Area Profit & Loss otomatis.
 """)
 
-# --- DATABASE KHUSUS (DARI ANDA) ---
+# --- DATABASE MICIN (FILTER < 10k) ---
 WATCHLIST = [
     "HEI/USDT", "BROCCOLI714/USDT", "PENGU/USDT", "BIO/USDT", "A2Z/USDT", 
     "VELODROME/USDT", "1000CHEEMS/USDT", "TURTLE/USDT", "MDT/USDT", "ACA/USDT", 
@@ -73,176 +74,193 @@ WATCHLIST = [
     "ONG/USDT", "USTC/USDT", "AEVO/USDT", "API3/USDT", "SXT/USDT", "1000SATS/USDT", 
     "OPEN/USDT", "BANANAS31/USDT", "MANTA/USDT", "XAI/USDT", "GUN/USDT", "RIF/USDT", 
     "MTL/USDT", "FIDA/USDT", "ACX/USDT", "DIA/USDT", "SLP/USDT", "MAGIC/USDT", 
-    "ERA/USDT", "PHA/USDT", "CTSI/USDT", "TNSR/USDT", 
-    # Koin Pasangan IDR (Data akan diambil via USDT)
-    "DOGE/IDR", "ADA/IDR", "HBAR/IDR", "POL/IDR", "WLD/IDR", "ARB/IDR", "ONDO/IDR", 
-    "TIA/IDR", "FLOKI/IDR", "WIF/IDR", "ZIL/IDR", "NEIRO/IDR", "BOME/IDR", 
-    "MANTA/IDR", "DOGS/IDR", "SCR/IDR"
+    "ERA/USDT", "PHA/USDT", "CTSI/USDT", "TNSR/USDT"
 ]
 
-# Inisialisasi Binance
-exchange = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'spot'}})
+# --- INISIALISASI MULTI-EXCHANGE ---
+exchanges = {
+    'binance': ccxt.binance({'enableRateLimit': True}),
+    'gateio': ccxt.gateio({'enableRateLimit': True}),
+    'mexc': ccxt.mexc({'enableRateLimit': True}),
+}
 
-# --- SIDEBAR PENGATURAN ---
+# --- SIDEBAR ---
 with st.sidebar:
-    st.header("⚙️ Strategi Trading Micin")
-    rr_ratio = st.number_input("Target Profit (RR Ratio)", value=2.0, step=0.5, help="2.0 = Target Untung 2x dari Risiko Rugi.")
-    risk_pct = st.slider("Stop Loss (Toleransi Rugi)", 1.0, 10.0, 5.0) / 100
-    st.info(f"Database memuat {len(WATCHLIST)} koin micin/low cap.")
+    st.header("⚙️ Strategi")
+    target_pct = st.slider("Target Profit (%)", 2.0, 20.0, 5.0)
+    stop_loss_pct = st.slider("Stop Loss (%)", 1.0, 10.0, 3.0)
+    kurs_usd_idr = st.number_input("Kurs USD/IDR", value=16200)
 
-# --- FUNGSI 1: DATA ROBUST (ANTI-BLOKIR) ---
-def get_data_robust(symbol):
+# --- FUNGSI 1: AMBIL DATA (MULTI-SOURCE) ---
+def get_data_multi_source(symbol):
+    target_pair = symbol.replace("/IDR", "/USDT")
     df = None
-    source = ""
+    source_name = ""
+    is_realtime = False
     
-    # Konversi IDR ke USDT untuk data global
-    target_symbol = symbol.replace("/IDR", "/USDT")
-    
-    # 1. COBA BINANCE
-    try:
-        # Fetch Data Candle
-        bars = exchange.fetch_ohlcv(target_symbol, timeframe='1h', limit=200)
-        if bars:
-            df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
-            df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=7) # WIB
-            df.set_index('time', inplace=True)
-            source = "Binance"
-    except:
-        pass 
-
-    # 2. COBA YAHOO (BACKUP)
+    # 1. Cek Exchange Real-Time Satu per Satu
+    for name, exchange_obj in exchanges.items():
+        try:
+            # Ambil 100 candle 1 jam
+            bars = exchange_obj.fetch_ohlcv(target_pair, timeframe='1h', limit=100)
+            if bars and len(bars) > 0:
+                df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
+                df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=7)
+                df.set_index('time', inplace=True)
+                source_name = f"⚡ {name.upper()} (Real-Time)"
+                is_realtime = True
+                break # Berhenti jika sudah ketemu
+        except:
+            continue # Lanjut ke exchange berikutnya
+            
+    # 2. Jika Semua Exchange Gagal, Pakai Yahoo (Backup)
     if df is None:
         try:
-            # Format Yahoo: HEI-USD
-            yf_sym = target_symbol.replace("/", "-").replace("USDT", "USD")
-            data_yf = yf.download(yf_sym, period='1mo', interval='1h', progress=False)
-            if len(data_yf) > 50:
+            yf_sym = target_pair.replace("/", "-").replace("USDT", "USD")
+            data_yf = yf.download(yf_sym, period='5d', interval='1h', progress=False)
+            if len(data_yf) > 20:
                 if isinstance(data_yf.columns, pd.MultiIndex): data_yf.columns = data_yf.columns.droplevel(1)
                 df = data_yf[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
                 df.columns = ['open', 'high', 'low', 'close', 'vol']
-                df.index = df.index + timedelta(hours=7) # WIB
-                source = "Yahoo"
+                df.index = df.index + timedelta(hours=7)
+                source_name = "⚠️ Yahoo (Delay - Ghost Mode Aktif)"
+                is_realtime = False
         except:
             pass
+            
+    return df, source_name, is_realtime
 
-    return df, source
-
-# --- FUNGSI 2: ANALISA SINYAL (UPTREND ONLY) ---
-def analyze_coin(symbol):
-    df, source = get_data_robust(symbol)
-    if df is None or len(df) < 50: return None
+# --- FUNGSI 2: ANALISA + GHOST PROJECTION ---
+def analyze_micin(symbol):
+    df, source, is_realtime = get_data_multi_source(symbol)
+    if df is None: return None
     
     close = df['close']
     
-    # Indikator EMA (Trend Filter)
+    # Indikator
     df['ema50'] = EMAIndicator(close=close, window=50).ema_indicator()
     df['ema200'] = EMAIndicator(close=close, window=200).ema_indicator()
     
-    current_price = close.iloc[-1]
-    ema50 = df['ema50'].iloc[-1]
-    ema200 = df['ema200'].iloc[-1]
+    # GHOST PROJECTION LOGIC
+    # Jika data delay (Yahoo), kita proyeksikan harga "sekarang" berdasarkan tren terakhir
+    last_candle_time = df.index[-1]
+    current_time = datetime.now() + timedelta(hours=7)
+    time_diff_minutes = (current_time - last_candle_time).total_seconds() / 60
     
-    # LOGIKA UPTREND: Harga > EMA 50 > EMA 200
-    # (Pastikan kita hanya beli saat tren NAIK)
+    projected_price = close.iloc[-1]
+    
+    # Jika delay > 10 menit, hitung proyeksi
+    if not is_realtime and time_diff_minutes > 10:
+        # Hitung momentum 3 candle terakhir
+        momentum = (close.iloc[-1] - close.iloc[-3]) / 3
+        # Proyeksikan (Jangan terlalu agresif, dikali faktor redaman 0.5)
+        # Artinya: "Lanjutin trennya, tapi pelan-pelan"
+        projection = momentum * (time_diff_minutes / 60) * 0.5 
+        projected_price = close.iloc[-1] + projection
+        
+        # Tambahkan baris bayangan ke dataframe untuk grafik
+        new_row = pd.DataFrame({
+            'open': [close.iloc[-1]], 'high': [projected_price], 
+            'low': [close.iloc[-1]], 'close': [projected_price], 'vol': [0]
+        }, index=[current_time])
+        df = pd.concat([df, new_row])
+        
+    current_price = df['close'].iloc[-1]
+    ema50 = df['ema50'].iloc[-2] # Pakai candle confirm sebelumnya
+    ema200 = df['ema200'].iloc[-2]
+    
+    # LOGIKA UPTREND
     if current_price > ema50 and ema50 > ema200:
-        
         entry = current_price
-        sl = entry * (1 - risk_pct)
-        risk = entry - sl
-        tp = entry + (risk * rr_ratio)
-        
-        # Hitung persentase
-        gain_pct = ((tp - entry) / entry) * 100
-        loss_pct = risk_pct * 100
+        tp = entry * (1 + target_pct/100)
+        sl = entry * (1 - stop_loss_pct/100)
         
         return {
             "symbol": symbol,
             "entry": entry,
             "tp": tp,
             "sl": sl,
-            "gain_pct": gain_pct,
-            "loss_pct": loss_pct,
             "source": source,
-            "df": df
+            "df": df,
+            "is_projected": not is_realtime,
+            "gain": target_pct
         }
     return None
 
 # --- UI UTAMA ---
-st.markdown("### 🕵️ Scanner Micin (Auto-Pilot)")
-if st.button("🚀 SCAN PASAR SEKARANG", type="primary"):
-    
-    # Ambil sampel acak 30 koin dari daftar micin
+if st.button("🚀 SCANNER MICIN PINTAR (ACAK 30)", type="primary"):
     batch = random.sample(WATCHLIST, 30)
     results = []
     
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    prog = st.progress(0)
+    log = st.empty()
     
-    for i, coin in enumerate(batch):
-        status_text.text(f"Mengecek {coin}...")
-        res = analyze_coin(coin)
-        if res:
-            results.append(res)
-        progress_bar.progress((i + 1) / 30)
+    for i, c in enumerate(batch):
+        log.caption(f"Mencari data {c} di berbagai server...")
+        res = analyze_micin(c)
+        if res: results.append(res)
+        prog.progress((i+1)/30)
         
-    status_text.empty()
-    progress_bar.empty()
+    log.empty()
+    prog.empty()
     
-    # --- TAMPILKAN HASIL ---
     if results:
-        # Urutkan: Prioritaskan yang potensi untungnya (persentase) paling besar
-        results.sort(key=lambda x: x['gain_pct'], reverse=True)
+        results.sort(key=lambda x: x['gain'], reverse=True)
+        best = results[0]
         
-        best_coin = results[0]
+        # --- TAMPILAN JUARA ---
+        st.success(f"💎 **HASIL TERBAIK: {best['symbol']}**")
+        st.caption(f"Sumber Data: {best['source']}")
         
-        # --- JUARA 1 ---
-        st.success(f"💎 **REKOMENDASI TERBAIK: {best_coin['symbol']}**")
-        st.caption(f"Data: {best_coin['source']} | Tren: SUPER BULLISH 🚀")
+        if best['is_projected']:
+            st.warning("👻 **GHOST MODE:** Data delay terdeteksi. Grafik putus-putus adalah prediksi AI tentang posisi harga SEKARANG.")
         
         c1, c2, c3 = st.columns(3)
-        c1.metric("ENTRY (Beli)", f"${best_coin['entry']:.6f}")
-        c2.metric("TARGET (Jual)", f"${best_coin['tp']:.6f}", f"+{best_coin['gain_pct']:.2f}%")
-        c3.metric("STOP LOSS", f"${best_coin['sl']:.6f}", f"-{best_coin['loss_pct']:.2f}%")
+        c1.metric("ENTRY (Estimasi)", f"Rp {best['entry']*kurs_usd_idr:,.0f}", f"${best['entry']:.5f}")
+        c2.metric("TARGET", f"Rp {best['tp']*kurs_usd_idr:,.0f}", f"+{target_pct}%")
+        c3.metric("STOP LOSS", f"Rp {best['sl']*kurs_usd_idr:,.0f}", f"-{stop_loss_pct}%")
         
-        # Grafik TradingView Style
-        df = best_coin['df']
+        # --- GRAFIK ---
+        df = best['df']
         fig = go.Figure()
-
-        # Candlestick
-        fig.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='Harga'))
         
-        # EMA Lines
-        fig.add_trace(go.Scatter(x=df.index, y=df['ema50'], line=dict(color='orange', width=1), name='EMA 50'))
-        fig.add_trace(go.Scatter(x=df.index, y=df['ema200'], line=dict(color='blue', width=2), name='EMA 200'))
-
-        # Visual Area
-        last_time = df.index[-1]
-        future_time = last_time + timedelta(hours=12)
+        # Candle Asli
+        fig.add_trace(go.Candlestick(x=df.index[:-1], open=df['open'][:-1], high=df['high'][:-1], low=df['low'][:-1], close=df['close'][:-1], name='History'))
         
-        # Hijau (Profit)
-        fig.add_shape(type="rect", x0=last_time, y0=best_coin['entry'], x1=future_time, y1=best_coin['tp'],
-            fillcolor="rgba(0, 255, 0, 0.2)", line=dict(width=1, color="green"))
+        # EMA
+        fig.add_trace(go.Scatter(x=df.index, y=df['ema50'], line=dict(color='orange'), name='EMA 50'))
         
-        # Merah (Loss)
-        fig.add_shape(type="rect", x0=last_time, y0=best_coin['sl'], x1=future_time, y1=best_coin['entry'],
-            fillcolor="rgba(255, 0, 0, 0.2)", line=dict(width=1, color="red"))
-
-        fig.update_layout(title=f"Setup Trading {best_coin['symbol']}", height=500, xaxis_rangeslider_visible=False, template="plotly_dark")
+        # GHOST PROJECTION (Jika Delay)
+        if best['is_projected']:
+            fig.add_trace(go.Scatter(
+                x=[df.index[-2], df.index[-1]],
+                y=[df['close'].iloc[-2], df['close'].iloc[-1]],
+                mode='lines+markers',
+                line=dict(color='white', width=3, dash='dot'),
+                name='AI PROJECTION (Ghost)'
+            ))
+            
+        # KOTAK HIJAU (PROFIT)
+        fig.add_shape(type="rect",
+            x0=df.index[-1], y0=best['entry'], x1=df.index[-1] + timedelta(hours=12), y1=best['tp'],
+            fillcolor="rgba(0, 255, 0, 0.2)", line=dict(width=0)
+        )
+        
+        # KOTAK MERAH (LOSS)
+        fig.add_shape(type="rect",
+            x0=df.index[-1], y0=best['sl'], x1=df.index[-1] + timedelta(hours=12), y1=best['entry'],
+            fillcolor="rgba(255, 0, 0, 0.2)", line=dict(width=0)
+        )
+        
         st.plotly_chart(fig, use_container_width=True)
         
-        # --- DAFTAR LAINNYA ---
+        # DAFTAR LAIN
         st.write("---")
-        st.write("### 📋 Micin Potensial Lainnya")
-        
+        st.write("### Opsi Lainnya:")
         rows = []
         for r in results[1:]:
-            rows.append([r['symbol'], f"${r['entry']:.6f}", f"${r['tp']:.6f} (+{r['gain_pct']:.1f}%)"])
-        
-        st.table(pd.DataFrame(rows, columns=["Koin", "Harga Beli", "Target Jual (Estimasi)"]))
+            rows.append([r['symbol'], r['source'], f"${r['entry']:.5f}", f"${r['tp']:.5f}"])
+        st.table(pd.DataFrame(rows, columns=["Koin", "Sumber", "Entry USD", "Target USD"]))
         
     else:
-        st.warning("⚠️ Batch ini tidak menemukan koin yang memenuhi syarat UPTREND KUAT.")
-        st.write("Pasar micin sangat volatil. Coba klik tombol SCAN lagi untuk mengambil sampel koin yang berbeda.")
-
-else:
-    st.info("👆 Klik tombol **SCAN PASAR** di atas. AI akan mencari koin murah yang siap terbang.")
+        st.warning("Tidak ada sinyal Uptrend yang valid di batch ini.")
