@@ -3,28 +3,25 @@ import numpy as np
 import pandas as pd
 import ccxt
 import yfinance as yf
+import requests # Untuk ambil data Fear & Greed
 import plotly.graph_objects as go
 from ta.trend import EMAIndicator
 from ta.momentum import RSIIndicator
 from datetime import datetime, timedelta
 import time
 import random
-import base64
 
 # --- KONFIGURASI ---
-st.set_page_config(page_title="AI SENTINEL (AUTO-ALARM)", layout="wide")
-
-# --- JUDUL & STATUS ---
-st.title("🚨 AI SENTINEL: Pos Ronda 24 Jam")
+st.set_page_config(page_title="AI SOCIAL PRO", layout="wide")
+st.title("🌐 AI SOCIAL PRO: Grafik + Sentimen Internet")
 st.markdown("""
-**Cara Kerja Mode Otomatis:**
-1.  Centang **"AKTIFKAN POS RONDA"** di menu kiri.
-2.  Biarkan layar menyala (Jangan di-close). Keraskan volume speaker.
-3.  AI akan mencari koin "Perfect Buy" setiap 60 detik.
-4.  Jika ketemu, **ALARM AKAN BERBUNYI** memanggil Anda.
+**Fitur Baru:**
+1.  📢 **Social Sentinel:** Mengambil data "Fear & Greed Index" (Rangkuman Hype Medsos & Google).
+2.  🧠 **Smart Logic:** Menyesuaikan strategi berdasarkan suasana hati pasar (Serakah vs Takut).
+3.  🛡️ **Pos Ronda:** Tetap memantau 24 jam.
 """)
 
-# --- DATABASE KOIN MICIN (< 10k) ---
+# --- DATABASE KOIN ---
 WATCHLIST = [
     "HEI/USDT", "BROCCOLI714/USDT", "PENGU/USDT", "BIO/USDT", "A2Z/USDT", 
     "VELODROME/USDT", "1000CHEEMS/USDT", "TURTLE/USDT", "MDT/USDT", "ACA/USDT", 
@@ -82,161 +79,171 @@ WATCHLIST = [
     "ERA/USDT", "PHA/USDT", "CTSI/USDT", "TNSR/USDT"
 ]
 
-# --- SETUP ---
+# --- SETUP EXCHANGE ---
 exchanges = {
     'binance': ccxt.binance({'enableRateLimit': True}),
     'gateio': ccxt.gateio({'enableRateLimit': True}),
+    'mexc': ccxt.mexc({'enableRateLimit': True}),
 }
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.header("🎛️ Pusat Kontrol")
-    run_sentinel = st.checkbox("🔴 AKTIFKAN POS RONDA (AUTO-SCAN)", value=False)
-    
+    st.header("🎛️ Kontrol")
+    run_sentinel = st.checkbox("🔴 AKTIFKAN POS RONDA", value=False)
     st.write("---")
-    st.write("**Setting Target:**")
     target_pct = st.slider("Target Cuan (%)", 2.0, 50.0, 5.0)
-    kurs_usd_idr = st.number_input("Kurs USD", value=16200)
+    kurs_usd = st.number_input("Kurs USD", value=16200)
 
-# --- FUNGSI ALARM ---
-def play_alarm():
-    # Suara Beep Keras (Base64)
-    audio_html = """
-    <audio autoplay>
-    <source src="https://www.soundjay.com/buttons/sounds/button-37.mp3" type="audio/mpeg">
-    </audio>
-    """
-    st.markdown(audio_html, unsafe_allow_html=True)
+# --- FUNGSI 1: AMBIL SENTIMEN SOSIAL (FEAR & GREED) ---
+def get_social_sentiment():
+    try:
+        # Mengambil data dari API Alternative.me (Standard Industri)
+        url = "https://api.alternative.me/fng/"
+        response = requests.get(url)
+        data = response.json()
+        
+        value = int(data['data'][0]['value'])
+        status = data['data'][0]['value_classification']
+        
+        return value, status
+    except:
+        return 50, "Neutral" # Default jika error
 
-# --- FUNGSI DATA ---
+# --- FUNGSI 2: DATA MARKET ---
 def get_data(symbol):
     pair = symbol.replace("/IDR", "/USDT")
     df = None
     source = ""
     
-    # 1. Binance
-    try:
-        bars = exchanges['binance'].fetch_ohlcv(pair, timeframe='1h', limit=200)
-        if bars:
-            df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
-            df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=7)
-            df.set_index('time', inplace=True)
-            source = "Binance"
-    except: pass
-    
-    # 2. Yahoo (Backup)
+    # Cek Multi-Exchange
+    for name, exc in exchanges.items():
+        try:
+            bars = exc.fetch_ohlcv(pair, timeframe='1h', limit=100)
+            if bars:
+                df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
+                df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=7)
+                df.set_index('time', inplace=True)
+                source = name.upper()
+                break
+        except: continue
+        
+    # Backup Yahoo
     if df is None:
         try:
             yf_sym = pair.replace("/", "-").replace("USDT", "USD")
             data_yf = yf.download(yf_sym, period='5d', interval='1h', progress=False)
-            if len(data_yf) > 50:
+            if len(data_yf) > 20:
                 if isinstance(data_yf.columns, pd.MultiIndex): data_yf.columns = data_yf.columns.droplevel(1)
                 df = data_yf[['Open', 'High', 'Low', 'Close', 'Volume']]
                 df.columns = ['open', 'high', 'low', 'close', 'vol']
                 df.index = df.index + timedelta(hours=7)
-                source = "Yahoo"
+                source = "Yahoo (Delay)"
         except: pass
         
     return df, source
 
-# --- LOGIKA KETAT (PENGECUT / AMAN) ---
-def check_for_golden_moment(symbol):
+# --- FUNGSI 3: ANALISA CERDAS (GRAFIK + SENTIMEN) ---
+def analyze_smart(symbol, sentiment_score):
     df, source = get_data(symbol)
-    if df is None or len(df) < 50: return None
+    if df is None: return None
     
     close = df['close']
+    current_price = close.iloc[-1]
     
     # Indikator
     df['ema200'] = EMAIndicator(close=close, window=200).ema_indicator()
-    df['ema50'] = EMAIndicator(close=close, window=50).ema_indicator()
     df['rsi'] = RSIIndicator(close=close, window=14).rsi()
     
-    current_price = close.iloc[-1]
-    ema200 = df['ema200'].iloc[-1]
-    ema50 = df['ema50'].iloc[-1]
     rsi = df['rsi'].iloc[-1]
+    ema200 = df['ema200'].iloc[-1]
     
-    # SYARAT 1: HARUS UPTREND (Harga > EMA 200)
-    # Ini syarat mutlak "Pengecut" biar gak rugi
-    if current_price < ema200: return None 
+    # --- LOGIKA SOCIAL SENTIMENT ---
+    # Jika Internet lagi "EXTREME FEAR" (Nilai < 20) -> Saatnya Serok Bawah (Diskon Besar)
+    # Jika Internet lagi "EXTREME GREED" (Nilai > 75) -> Hati-hati Pucuk (Jangan Beli)
     
-    # SYARAT 2: HARUS DISKON (RSI < 45)
-    # Kita tidak mau beli di pucuk
-    if rsi > 45: return None
+    is_buy = False
+    reason = ""
     
-    # Jika lolos dua syarat di atas = GOLDEN MOMENT
-    return {
-        "symbol": symbol,
-        "entry": current_price,
-        "tp": current_price * (1 + target_pct/100),
-        "sl": current_price * 0.95,
-        "rsi": rsi,
-        "source": source,
-        "df": df
-    }
+    # KONDISI 1: PASAR TAKUT (Fear < 30) -> Kita cari pantulan (Rebound)
+    if sentiment_score < 30:
+        if rsi < 30: # RSI juga Oversold
+            is_buy = True
+            reason = "💎 GEM: Pasar Panik + Harga Murah (Serok!)"
+            
+    # KONDISI 2: PASAR NORMAL (30-70) -> Kita cari Tren (Uptrend)
+    elif 30 <= sentiment_score <= 70:
+        if current_price > ema200 and rsi < 50:
+            is_buy = True
+            reason = "🚀 TREND: Pasar Stabil + Uptrend Sehat"
+            
+    # KONDISI 3: PASAR SERAKAH (Greed > 70) -> Sangat Selektif
+    else:
+        # Kalau pasar lagi gila (Greed), kita cuma beli kalau koreksi dalam banget
+        if current_price > ema200 and rsi < 40:
+            is_buy = True
+            reason = "⚠️ RISKY: Beli Koreksi di tengah FOMO"
 
-# --- LOOPING MONITORING (THE SENTINEL) ---
-monitor_placeholder = st.empty()
-result_placeholder = st.empty()
+    if is_buy:
+        return {
+            "symbol": symbol,
+            "entry": current_price,
+            "tp": current_price * (1 + target_pct/100),
+            "source": source,
+            "reason": reason,
+            "df": df
+        }
+    return None
+
+# --- UI UTAMA ---
+# TAMPILKAN SENTIMEN INTERNET DI ATAS
+sent_val, sent_text = get_social_sentiment()
+
+col_sent1, col_sent2 = st.columns([1, 4])
+with col_sent1:
+    st.metric("Sentimen Internet", f"{sent_val}/100", sent_text)
+
+with col_sent2:
+    if sent_val < 25:
+        st.error("📉 STATUS: EXTREME FEAR (Pasar Panik). Waktunya cari diskon!")
+    elif sent_val > 75:
+        st.warning("📈 STATUS: EXTREME GREED (Pasar Serakah). Hati-hati nyangkut di pucuk!")
+    else:
+        st.info("⚖️ STATUS: NETRAL. Cari koin yang tren-nya bagus.")
+
+# --- POS RONDA ---
+placeholder = st.empty()
 
 if run_sentinel:
-    st.toast("🛡️ POS RONDA AKTIF! Jangan tutup tab ini.")
-    
     while True:
-        # 1. Ambil 5 koin acak untuk dicek (supaya tidak kena limit)
-        batch = random.sample(WATCHLIST, 5)
-        
-        # Tampilan Status (Biar tau AI hidup)
-        current_time = datetime.now().strftime("%H:%M:%S")
-        with monitor_placeholder.container():
-            st.info(f"🕒 {current_time} | Sedang meronda: {', '.join(batch)} ...")
-        
-        # 2. Cek Koin
-        found_signal = False
-        for coin in batch:
-            res = check_for_golden_moment(coin)
-            if res:
-                found_signal = True
+        batch = random.sample(WATCHLIST, 3)
+        with placeholder.container():
+            st.write(f"Mencari peluang di tengah sentimen **{sent_text}**...")
+            
+            for coin in batch:
+                res = analyze_smart(coin, sent_val)
+                time.sleep(1) # Santai biar ga di-banned
                 
-                # --- JIKA KETEMU ---
-                play_alarm() # BUNYIKAN ALARM
-                
-                with result_placeholder.container():
-                    st.success(f"🚨 **ALARM! PELUANG DITEMUKAN: {res['symbol']}**")
-                    st.write(f"RSI: {res['rsi']:.1f} (Murah & Uptrend)")
+                if res:
+                    st.success(f"🚨 **DITEMUKAN: {res['symbol']}**")
+                    st.caption(f"Alasan: {res['reason']}")
                     
                     c1, c2 = st.columns(2)
-                    c1.metric("BELI SEKARANG", f"${res['entry']:.6f}")
-                    c2.metric("JUAL NANTI", f"${res['tp']:.6f}", f"+{target_pct}%")
+                    c1.metric("BELI", f"${res['entry']:.5f}", f"Rp {res['entry']*kurs_usd:,.0f}")
+                    c2.metric("JUAL", f"${res['tp']:.5f}")
                     
                     # Grafik
-                    df = res['df']
                     fig = go.Figure()
-                    fig.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close']))
-                    fig.add_trace(go.Scatter(x=df.index, y=df['ema200'], line=dict(color='blue'), name='EMA 200'))
-                    # Kotak Hijau
-                    fig.add_shape(type="rect", x0=df.index[-1], y0=res['entry'], x1=df.index[-1]+timedelta(hours=12), y1=res['tp'], fillcolor="rgba(0,255,0,0.2)", line=dict(width=0))
-                    
+                    fig.add_trace(go.Candlestick(x=res['df'].index, open=res['df']['open'], high=res['df']['high'], low=res['df']['low'], close=res['df']['close']))
+                    fig.add_trace(go.Scatter(x=res['df'].index, y=res['df']['ema200'], line=dict(color='orange'), name='EMA 200'))
                     st.plotly_chart(fig, use_container_width=True)
-                    st.stop() # BERHENTI SCAN SUPAYA USER BISA LIHAT
+                    
+                    # Suara
+                    audio_html = """<audio autoplay><source src="https://www.soundjay.com/buttons/sounds/button-37.mp3" type="audio/mpeg"></audio>"""
+                    st.markdown(audio_html, unsafe_allow_html=True)
+                    
+                    st.stop()
         
-        # 3. Jeda Waktu (Supaya tidak diblokir Binance)
-        time.sleep(15) # Istirahat 15 detik sebelum scan lagi
-        
+        time.sleep(5)
+
 else:
-    monitor_placeholder.info("👈 Centang **'AKTIFKAN POS RONDA'** di sebelah kiri untuk menyalakan mode otomatis.")
-    
-    # Tombol Scan Manual Biasa
-    if st.button("Scan Manual Sekali Saja"):
-        batch = random.sample(WATCHLIST, 20)
-        found = False
-        progress = st.progress(0)
-        for i, c in enumerate(batch):
-            res = check_for_golden_moment(c)
-            if res:
-                st.success(f"✅ DITEMUKAN: {res['symbol']} (RSI {res['rsi']:.1f})")
-                found = True
-            progress.progress((i+1)/20)
-        
-        if not found:
-            st.warning("Belum ada koin yang lolos filter 'Aman & Murah' di batch ini.")
+    placeholder.info("Centang **AKTIFKAN POS RONDA** untuk memulai.")
