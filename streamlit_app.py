@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import ccxt
 import yfinance as yf
-import requests # KITA PAKAI INI UNTUK PANGGIL GEMINI
+import requests # JALUR TIKUS (DIRECT API)
 import plotly.graph_objects as go
 from ta.trend import EMAIndicator
 from ta.momentum import RSIIndicator
@@ -12,8 +12,8 @@ import time
 import random
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(page_title="AI TRINITY: DIRECT MODE", layout="wide")
-st.title("🎛️ AI TRINITY: Direct Link Edition")
+st.set_page_config(page_title="AI TRINITY: BRUTE FORCE", layout="wide")
+st.title("🎛️ AI TRINITY: Anti-Error Edition")
 
 # --- DATABASE KOIN ---
 WATCHLIST = [
@@ -95,10 +95,11 @@ with st.sidebar:
     st.divider()
     if "MODE 3" not in mode_operasi:
         st.header("🧠 Otak Gemini")
+        st.warning("⚠️ GUNAKAN API KEY BARU! YG LAMA SUDAH BOCOR.")
         gemini_key = st.text_input("Gemini API Key", type="password")
     else:
         gemini_key = None
-        st.info("ℹ️ Mode 3 hemat API.")
+        st.info("ℹ️ Mode 3 berjalan murni teknikal.")
 
     st.divider()
     st.header("🎛️ Kontrol")
@@ -116,38 +117,47 @@ def get_social_sentiment():
     except:
         return 50, "Neutral"
 
-# --- FUNGSI GEMINI JALUR BELAKANG (DIRECT HTTP) ---
-# Ini tidak pakai library google, jadi ANTI-ERROR 404
+# --- FUNGSI ASK GEMINI (BRUTE FORCE ROTATION) ---
 def ask_gemini(symbol, price, rsi, trend_status, mode, sentiment_text):
     if not gemini_key: return "⚠️ API Key Kosong"
     
-    # URL Langsung ke Server Google (Bypass Library Streamlit)
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
+    # DAFTAR MODEL YANG AKAN DICOBA BERURUTAN
+    # Kalau satu gagal, dia pindah ke bawahnya
+    models_to_try = [
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-pro",
+        "gemini-1.0-pro"
+    ]
     
     headers = {'Content-Type': 'application/json'}
-    
     prompt_text = f"""
     Act as Crypto Analyst. 
     Coin: {symbol}, Price: ${price}, RSI: {rsi:.1f}, Trend: {trend_status}.
     Sentiment: {sentiment_text}. Mode: {mode}.
     Question: Is this a good entry? Answer YES/NO and short reason.
     """
+    payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
     
-    payload = {
-        "contents": [{
-            "parts": [{"text": prompt_text}]
-        }]
-    }
+    last_error = ""
     
-    try:
-        response = requests.post(url, headers=headers, json=payload)
-        if response.status_code == 200:
-            result = response.json()
-            return result['candidates'][0]['content']['parts'][0]['text']
-        else:
-            return f"Error Google: {response.status_code} (Cek API Key)"
-    except Exception as e:
-        return f"Koneksi Gagal: {str(e)}"
+    # LOOPING COBA SEMUA MODEL
+    for model_name in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={gemini_key}"
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            if response.status_code == 200:
+                # BERHASIL! KELUAR DARI LOOP
+                result = response.json()
+                return result['candidates'][0]['content']['parts'][0]['text']
+            else:
+                last_error = f"{model_name}: {response.status_code}"
+                continue # Coba model berikutnya
+        except Exception as e:
+            last_error = str(e)
+            continue
+            
+    return f"Gemini Gagal Total (Cek API Key Baru): {last_error}"
 
 # --- FUNGSI DATA ---
 def get_data(symbol):
