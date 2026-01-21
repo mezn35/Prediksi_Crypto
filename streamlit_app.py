@@ -4,23 +4,18 @@ import pandas as pd
 import ccxt
 import yfinance as yf
 import plotly.graph_objects as go
-from ta.trend import EMAIndicator, MACD
+from ta.trend import EMAIndicator
 from ta.momentum import RSIIndicator
+from ta.volatility import BollingerBands
 from datetime import datetime, timedelta
 import time
 import random
 
 # --- KONFIGURASI ---
-st.set_page_config(page_title="CRYPTO MONEY MANAGER", layout="wide")
-st.title("🛡️ CRYPTO MONEY MANAGER: Kalkulator Anti-Rungkad")
-st.markdown("""
-**Strategi Keselamatan Aset:**
-1.  **Volume Check:** Mencegah Anda membeli di koin "mati" atau menjadi mangsa bandar.
-2.  **Smart Sizing:** Menghitung jumlah beli berdasarkan risiko kekalahan (bukan asal Hajar Kanan).
-3.  **Layering:** Memecah pembelian menjadi 3 posisi untuk mendapatkan harga rata-rata terbaik.
-""")
+st.set_page_config(page_title="CRYPTO COMMANDER", layout="wide")
+st.title("🛡️ CRYPTO COMMANDER: Money Manager + USDT Radar")
 
-# --- DATABASE KOIN ---
+# --- DATABASE KOIN MICIN ---
 WATCHLIST = [
     "HEI/USDT", "BROCCOLI714/USDT", "PENGU/USDT", "BIO/USDT", "A2Z/USDT", 
     "VELODROME/USDT", "1000CHEEMS/USDT", "TURTLE/USDT", "MDT/USDT", "ACA/USDT", 
@@ -80,172 +75,4 @@ WATCHLIST = [
 
 # --- SETUP EXCHANGE ---
 exchanges = {
-    'binance': ccxt.binance({'enableRateLimit': True}),
-    'gateio': ccxt.gateio({'enableRateLimit': True}),
-    'mexc': ccxt.mexc({'enableRateLimit': True}),
-}
-
-# --- SIDEBAR: MONEY MANAGEMENT ---
-with st.sidebar:
-    st.header("💰 Dompet & Risiko")
-    
-    saldo_usdt = st.number_input("Total Saldo USDT Anda", value=100.0, step=10.0)
-    resiko_persen = st.slider("Siap Rugi per Trade (%)", 1.0, 10.0, 2.0, help="Jika rugi, hanya hilang sekian % dari saldo.")
-    
-    st.info(f"Maksimal Rugi: **${saldo_usdt * resiko_persen / 100:.2f}**")
-    
-    st.divider()
-    st.header("🎛️ Kontrol")
-    run_sentinel = st.checkbox("🔴 AKTIFKAN POS RONDA", value=False)
-    kurs_usd = st.number_input("Kurs USD (IDR)", value=16200)
-
-# --- FUNGSI DATA ---
-def get_data(symbol):
-    pair = symbol.replace("/IDR", "/USDT")
-    df = None; source = ""
-    # Coba Multi Exchange
-    for name, exc in exchanges.items():
-        try:
-            bars = exc.fetch_ohlcv(pair, timeframe='1h', limit=200)
-            if bars:
-                df = pd.DataFrame(bars, columns=['time','open','high','low','close','vol'])
-                df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=7)
-                df.set_index('time', inplace=True)
-                source = name.upper(); break
-        except: continue
-    
-    # Backup Yahoo
-    if df is None:
-        try:
-            yf_sym = pair.replace("/", "-").replace("USDT", "USD")
-            d = yf.download(yf_sym, period='5d', interval='1h', progress=False)
-            if len(d) > 20:
-                if isinstance(d.columns, pd.MultiIndex): d.columns = d.columns.droplevel(1)
-                df = d[['Open','High','Low','Close','Volume']]
-                df.columns = ['open','high','low','close','vol']
-                df.index = df.index + timedelta(hours=7)
-                source = "Yahoo"
-        except: pass
-    return df, source
-
-# --- FUNGSI HITUNG POSISI ---
-def calculate_position(entry_price, stop_loss_price, total_equity, risk_pct):
-    # Rumus: Risk Amount / % Jarak Stop Loss
-    risk_amount = total_equity * (risk_pct / 100)
-    sl_distance_pct = abs(entry_price - stop_loss_price) / entry_price
-    
-    if sl_distance_pct == 0: return 0
-    
-    position_size_usdt = risk_amount / sl_distance_pct
-    
-    # Safety Check: Jangan beli lebih dari 50% saldo di 1 koin micin
-    if position_size_usdt > (total_equity * 0.5):
-        position_size_usdt = total_equity * 0.5
-        
-    return position_size_usdt
-
-# --- ANALISA TEKNIKAL MURNI ---
-def analyze_pure_math(symbol):
-    df, src = get_data(symbol)
-    if df is None: return None
-    
-    close = df['close']; curr = close.iloc[-1]
-    high = df['high'].iloc[-1]; low = df['low'].iloc[-1]
-    
-    # Indikator
-    df['ema200'] = EMAIndicator(close, window=200).ema_indicator()
-    df['ema50'] = EMAIndicator(close, window=50).ema_indicator()
-    df['rsi'] = RSIIndicator(close, window=14).rsi()
-    df['atr'] = high - low # Sederhana ATR
-    
-    rsi = df['rsi'].iloc[-1]
-    ema200 = df['ema200'].iloc[-1]
-    
-    # RULE: Tren Naik (Aman) & Diskon (RSI < 55)
-    if curr > ema200 and rsi < 55:
-        # Tentukan Stop Loss (Low candle sebelumnya atau 3% di bawah harga)
-        sl_price = curr * 0.95 
-        
-        # Hitung Uang
-        buy_size = calculate_position(curr, sl_price, saldo_usdt, resiko_persen)
-        
-        # Cek Volume (Bahaya Exit Liquidity)
-        # Estimasi volume 24jam terakhir (jumlahkan 24 candle terakhir)
-        vol_24h_usdt = (df['vol'] * df['close']).rolling(24).sum().iloc[-1]
-        
-        # Jangan beli lebih dari 1% volume harian (Supaya tidak jadi paus nyangkut)
-        max_safe_buy = vol_24h_usdt * 0.01 
-        
-        warning = ""
-        if buy_size > max_safe_buy:
-            buy_size = max_safe_buy # Turunkan ukuran beli
-            warning = "⚠️ Ukuran dikecilkan karena volume koin sepi (Bahaya nyangkut!)"
-            
-        return {
-            "symbol": symbol, "entry": curr, "sl": sl_price,
-            "tp1": curr * 1.05, "tp2": curr * 1.10, "tp3": curr * 1.20,
-            "size": buy_size, "rsi": rsi, "src": src, "df": df, "warn": warning,
-            "vol": vol_24h_usdt
-        }
-    return None
-
-# --- TAMPILAN UTAMA ---
-ph = st.empty(); res_ph = st.empty()
-
-if run_sentinel:
-    while True:
-        batch = random.sample(WATCHLIST, 5)
-        with ph.container():
-            st.info(f"🔄 Menghitung Risiko: {', '.join(batch)} ...")
-            
-            for coin in batch:
-                res = analyze_pure_math(coin)
-                time.sleep(0.5)
-                
-                if res:
-                    st.markdown("""<audio autoplay><source src="https://www.soundjay.com/buttons/sounds/button-37.mp3" type="audio/mpeg"></audio>""", unsafe_allow_html=True)
-                    
-                    with res_ph.container():
-                        st.success(f"💎 **REKOMENDASI BELI: {res['symbol']}**")
-                        
-                        if res['warn']:
-                            st.warning(res['warn'])
-                        
-                        # BAGIAN PENTING: STRATEGI UANG
-                        c1, c2, c3 = st.columns(3)
-                        c1.metric("💵 TOTAL BELI (USDT)", f"${res['size']:.2f}", f"Rp {res['size']*kurs_usd:,.0f}")
-                        c2.metric("🎯 ENTRY PRICE", f"${res['entry']:.5f}")
-                        c3.metric("🛑 STOP LOSS (Wajib)", f"${res['sl']:.5f}", "-5%")
-                        
-                        # STRATEGI LAYERING
-                        with st.expander("📉 Strategi Jaring (Anti-Pucuk)", expanded=True):
-                            st.write(f"Jangan beli ${res['size']:.2f} sekaligus! Pasang antrian (Limit Order):")
-                            col_a, col_b, col_c = st.columns(3)
-                            
-                            # Jaring 1: 30% dana di harga sekarang
-                            amt1 = res['size'] * 0.30
-                            col_a.info(f"**Jaring 1 (Sekarang)**\n\nBeli: ${amt1:.2f}\nHarga: Market")
-                            
-                            # Jaring 2: 30% dana di harga diskon 2%
-                            amt2 = res['size'] * 0.30
-                            price2 = res['entry'] * 0.98
-                            col_b.warning(f"**Jaring 2 (-2%)**\n\nBeli: ${amt2:.2f}\nHarga: ${price2:.5f}")
-                            
-                            # Jaring 3: 40% dana di harga diskon 4%
-                            amt3 = res['size'] * 0.40
-                            price3 = res['entry'] * 0.96
-                            col_c.error(f"**Jaring 3 (-4%)**\n\nBeli: ${amt3:.2f}\nHarga: ${price3:.5f}")
-                        
-                        st.caption(f"Volume 24 Jam: ${res['vol']:,.0f} | Sumber: {res['src']}")
-                        
-                        # Grafik
-                        fig = go.Figure()
-                        d = res['df']
-                        fig.add_trace(go.Candlestick(x=d.index, open=d['open'], high=d['high'], low=d['low'], close=d['close']))
-                        fig.add_trace(go.Scatter(x=d.index, y=d['ema200'], line=dict(color='blue'), name='EMA 200 (Tren)'))
-                        st.plotly_chart(fig, use_container_width=True)
-                        
-                        st.stop() # Berhenti biar user bisa baca hitungannya
-        time.sleep(2)
-else:
-    ph.info("Masukkan Saldo USDT di kiri, lalu centang **AKTIFKAN POS RONDA**.")
+    'binance': ccxt.binance({'enable
