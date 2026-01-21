@@ -2,8 +2,7 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import ccxt
-import yfinance as yf
-import requests # JALUR TIKUS (DIRECT API)
+import requests
 import plotly.graph_objects as go
 from ta.trend import EMAIndicator
 from ta.momentum import RSIIndicator
@@ -11,9 +10,9 @@ from datetime import datetime, timedelta
 import time
 import random
 
-# --- KONFIGURASI HALAMAN ---
-st.set_page_config(page_title="AI TRINITY: BRUTE FORCE", layout="wide")
-st.title("🎛️ AI TRINITY: Anti-Error Edition")
+# --- KONFIGURASI ---
+st.set_page_config(page_title="AI TRINITY: AUTO-DETECT", layout="wide")
+st.title("🎛️ AI TRINITY: Auto-Detect Model")
 
 # --- DATABASE KOIN ---
 WATCHLIST = [
@@ -95,8 +94,28 @@ with st.sidebar:
     st.divider()
     if "MODE 3" not in mode_operasi:
         st.header("🧠 Otak Gemini")
-        st.warning("⚠️ GUNAKAN API KEY BARU! YG LAMA SUDAH BOCOR.")
-        gemini_key = st.text_input("Gemini API Key", type="password")
+        gemini_key = st.text_input("Gemini API Key (Wajib Baru)", type="password")
+        
+        # --- FITUR DEBUGGING BARU ---
+        if st.button("🛠️ TES KONEKSI GEMINI"):
+            if not gemini_key:
+                st.error("Masukkan API Key dulu!")
+            else:
+                try:
+                    # Cek list model yang tersedia untuk Key ini
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={gemini_key}"
+                    resp = requests.get(url)
+                    if resp.status_code == 200:
+                        models = resp.json().get('models', [])
+                        valid_models = [m['name'] for m in models if 'generateContent' in m['supportedGenerationMethods']]
+                        st.success(f"✅ KONEKSI SUKSES! {len(valid_models)} Model ditemukan.")
+                        with st.expander("Lihat Model Tersedia"):
+                            st.write(valid_models)
+                    else:
+                        st.error(f"❌ KONEKSI GAGAL: {resp.status_code}")
+                        st.write(resp.text)
+                except Exception as e:
+                    st.error(f"Error Jaringan: {str(e)}")
     else:
         gemini_key = None
         st.info("ℹ️ Mode 3 berjalan murni teknikal.")
@@ -117,20 +136,11 @@ def get_social_sentiment():
     except:
         return 50, "Neutral"
 
-# --- FUNGSI ASK GEMINI (BRUTE FORCE ROTATION) ---
-def ask_gemini(symbol, price, rsi, trend_status, mode, sentiment_text):
+# --- FUNGSI AUTO-DETECT MODEL GEMINI ---
+def ask_gemini_smart(symbol, price, rsi, trend_status, mode, sentiment_text):
     if not gemini_key: return "⚠️ API Key Kosong"
     
-    # DAFTAR MODEL YANG AKAN DICOBA BERURUTAN
-    # Kalau satu gagal, dia pindah ke bawahnya
-    models_to_try = [
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-latest",
-        "gemini-pro",
-        "gemini-1.0-pro"
-    ]
-    
-    headers = {'Content-Type': 'application/json'}
+    # 1. Tentukan Pesan Prompt
     prompt_text = f"""
     Act as Crypto Analyst. 
     Coin: {symbol}, Price: ${price}, RSI: {rsi:.1f}, Trend: {trend_status}.
@@ -138,26 +148,44 @@ def ask_gemini(symbol, price, rsi, trend_status, mode, sentiment_text):
     Question: Is this a good entry? Answer YES/NO and short reason.
     """
     payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
+    headers = {'Content-Type': 'application/json'}
+
+    # 2. DAFTAR MODEL YANG AKAN DICOBA (Urutan Prioritas)
+    # Kita coba model Flash terbaru, lalu Pro, lalu fallback
+    models_to_try = [
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-pro",
+        "gemini-pro"
+    ]
     
     last_error = ""
-    
-    # LOOPING COBA SEMUA MODEL
+
+    # 3. LOOPING "TEMBAK" SEMUA MODEL
     for model_name in models_to_try:
+        # Gunakan Endpoint v1beta (Standar saat ini)
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={gemini_key}"
+        
         try:
-            response = requests.post(url, headers=headers, json=payload)
+            response = requests.post(url, headers=headers, json=payload, timeout=10)
+            
             if response.status_code == 200:
-                # BERHASIL! KELUAR DARI LOOP
+                # BERHASIL! Ambil jawaban dan keluar dari fungsi
                 result = response.json()
-                return result['candidates'][0]['content']['parts'][0]['text']
+                try:
+                    return result['candidates'][0]['content']['parts'][0]['text']
+                except:
+                    return "Gemini Error: Format Jawaban Aneh"
             else:
+                # Gagal di model ini, simpan error dan lanjut ke model berikutnya
                 last_error = f"{model_name}: {response.status_code}"
-                continue # Coba model berikutnya
+                continue 
+                
         except Exception as e:
             last_error = str(e)
             continue
-            
-    return f"Gemini Gagal Total (Cek API Key Baru): {last_error}"
+
+    return f"Gagal Semua Model (Cek Tombol Tes Koneksi): {last_error}"
 
 # --- FUNGSI DATA ---
 def get_data(symbol):
@@ -210,13 +238,13 @@ def analyze_market(symbol, mode_choice, sent_idx, sent_text):
     # MODE 1
     if "MODE 1" in mode_choice:
         if rsi < 35:
-            gemini_msg = ask_gemini(symbol, curr, rsi, trend, "AGRESIF", sent_text)
+            gemini_msg = ask_gemini_smart(symbol, curr, rsi, trend, "AGRESIF", sent_text)
             res = {"type": "🔥 AGRESIF", "reason": "RSI Oversold"}
 
     # MODE 2
     elif "MODE 2" in mode_choice:
         if curr > ema200 and rsi < 55:
-            gemini_msg = ask_gemini(symbol, curr, rsi, trend, "MODERAT", sent_text)
+            gemini_msg = ask_gemini_smart(symbol, curr, rsi, trend, "MODERAT", sent_text)
             res = {"type": "🧠 MODERAT", "reason": "Uptrend + Diskon"}
 
     # MODE 3
