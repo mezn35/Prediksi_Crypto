@@ -2,17 +2,23 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import ccxt
-import requests # Kita pakai jalur HTTP standar
+import yfinance as yf
 import plotly.graph_objects as go
-from ta.trend import EMAIndicator
+from ta.trend import EMAIndicator, MACD
 from ta.momentum import RSIIndicator
 from datetime import datetime, timedelta
 import time
 import random
 
 # --- KONFIGURASI ---
-st.set_page_config(page_title="AI TRINITY: GROQ LLaMA 3", layout="wide")
-st.title("🎛️ AI TRINITY: LLaMA 3 Edition (Super Fast)")
+st.set_page_config(page_title="CRYPTO MONEY MANAGER", layout="wide")
+st.title("🛡️ CRYPTO MONEY MANAGER: Kalkulator Anti-Rungkad")
+st.markdown("""
+**Strategi Keselamatan Aset:**
+1.  **Volume Check:** Mencegah Anda membeli di koin "mati" atau menjadi mangsa bandar.
+2.  **Smart Sizing:** Menghitung jumlah beli berdasarkan risiko kekalahan (bukan asal Hajar Kanan).
+3.  **Layering:** Memecah pembelian menjadi 3 posisi untuk mendapatkan harga rata-rata terbaik.
+""")
 
 # --- DATABASE KOIN ---
 WATCHLIST = [
@@ -79,88 +85,28 @@ exchanges = {
     'mexc': ccxt.mexc({'enableRateLimit': True}),
 }
 
-# --- SIDEBAR ---
+# --- SIDEBAR: MONEY MANAGEMENT ---
 with st.sidebar:
-    st.header("🎮 MODE SCANNER")
-    mode_operasi = st.radio(
-        "Strategi:",
-        ("🔥 MODE 1: Super Agresif", "🧠 MODE 2: Moderat Cerdas", "🛡️ MODE 3: Sentinel Klasik")
-    )
+    st.header("💰 Dompet & Risiko")
+    
+    saldo_usdt = st.number_input("Total Saldo USDT Anda", value=100.0, step=10.0)
+    resiko_persen = st.slider("Siap Rugi per Trade (%)", 1.0, 10.0, 2.0, help="Jika rugi, hanya hilang sekian % dari saldo.")
+    
+    st.info(f"Maksimal Rugi: **${saldo_usdt * resiko_persen / 100:.2f}**")
     
     st.divider()
-    if "MODE 3" not in mode_operasi:
-        st.header("🧠 OTAK AI (GROQ)")
-        st.caption("Dapatkan key di console.groq.com (Gratis & Cepat)")
-        groq_key = st.text_input("Groq API Key (gsk_...)", type="password")
-        
-        if st.button("🛠️ TES KONEKSI AI"):
-            if not groq_key:
-                st.error("Isi Key dulu bos!")
-            else:
-                try:
-                    r = requests.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
-                        json={"model": "llama3-70b-8192", "messages": [{"role": "user", "content": "hi"}]}
-                    )
-                    if r.status_code == 200: st.success("✅ AI LLaMA 3 SIAP TEMPUR!")
-                    else: st.error(f"❌ Gagal: {r.status_code} - {r.text}")
-                except Exception as e: st.error(f"Error: {e}")
-    else:
-        groq_key = None
-
-    st.divider()
-    st.header("🎛️ KONTROL")
+    st.header("🎛️ Kontrol")
     run_sentinel = st.checkbox("🔴 AKTIFKAN POS RONDA", value=False)
-    target_pct = st.slider("Target Cuan (%)", 2.0, 50.0, 5.0)
-    kurs_usd = st.number_input("Kurs USD", value=16200)
-
-# --- FUNGSI SENTIMEN ---
-def get_social_sentiment():
-    try:
-        r = requests.get("https://api.alternative.me/fng/")
-        d = r.json()
-        return int(d['data'][0]['value']), d['data'][0]['value_classification']
-    except: return 50, "Neutral"
-
-# --- FUNGSI ASK AI (GROQ LLaMA 3) ---
-def ask_ai_groq(symbol, price, rsi, trend, mode, sentiment):
-    if not groq_key: return "⚠️ Pasang API Key Groq"
-    
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"}
-    
-    prompt = f"""
-    Act as a Senior Crypto Scalper.
-    Coin: {symbol}, Price: ${price}, RSI: {rsi:.1f}, Trend: {trend}.
-    Market Sentiment: {sentiment}. Strategy Mode: {mode}.
-    
-    Is this a valid entry? Answer with YES or NO and a very short reason (max 1 sentence).
-    """
-    
-    payload = {
-        "model": "llama3-70b-8192", # Model LLaMA 3 yang sangat cepat
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.5,
-        "max_tokens": 50
-    }
-    
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=5)
-        if response.status_code == 200:
-            return response.json()['choices'][0]['message']['content']
-        else:
-            return f"Error AI: {response.status_code}"
-    except Exception as e:
-        return f"Koneksi AI Putus: {str(e)}"
+    kurs_usd = st.number_input("Kurs USD (IDR)", value=16200)
 
 # --- FUNGSI DATA ---
 def get_data(symbol):
     pair = symbol.replace("/IDR", "/USDT")
     df = None; source = ""
+    # Coba Multi Exchange
     for name, exc in exchanges.items():
         try:
-            bars = exc.fetch_ohlcv(pair, timeframe='1h', limit=100)
+            bars = exc.fetch_ohlcv(pair, timeframe='1h', limit=200)
             if bars:
                 df = pd.DataFrame(bars, columns=['time','open','high','low','close','vol'])
                 df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=7)
@@ -168,9 +114,11 @@ def get_data(symbol):
                 source = name.upper(); break
         except: continue
     
-    if df is None: # Backup Yahoo
+    # Backup Yahoo
+    if df is None:
         try:
-            d = yf.download(pair.replace("/","-").replace("USDT","USD"), period='5d', interval='1h', progress=False)
+            yf_sym = pair.replace("/", "-").replace("USDT", "USD")
+            d = yf.download(yf_sym, period='5d', interval='1h', progress=False)
             if len(d) > 20:
                 if isinstance(d.columns, pd.MultiIndex): d.columns = d.columns.droplevel(1)
                 df = d[['Open','High','Low','Close','Volume']]
@@ -180,77 +128,124 @@ def get_data(symbol):
         except: pass
     return df, source
 
-# --- ANALISA CORE ---
-def analyze(symbol, mode, sent_idx, sent_text):
+# --- FUNGSI HITUNG POSISI ---
+def calculate_position(entry_price, stop_loss_price, total_equity, risk_pct):
+    # Rumus: Risk Amount / % Jarak Stop Loss
+    risk_amount = total_equity * (risk_pct / 100)
+    sl_distance_pct = abs(entry_price - stop_loss_price) / entry_price
+    
+    if sl_distance_pct == 0: return 0
+    
+    position_size_usdt = risk_amount / sl_distance_pct
+    
+    # Safety Check: Jangan beli lebih dari 50% saldo di 1 koin micin
+    if position_size_usdt > (total_equity * 0.5):
+        position_size_usdt = total_equity * 0.5
+        
+    return position_size_usdt
+
+# --- ANALISA TEKNIKAL MURNI ---
+def analyze_pure_math(symbol):
     df, src = get_data(symbol)
     if df is None: return None
     
     close = df['close']; curr = close.iloc[-1]
+    high = df['high'].iloc[-1]; low = df['low'].iloc[-1]
+    
+    # Indikator
     df['ema200'] = EMAIndicator(close, window=200).ema_indicator()
     df['ema50'] = EMAIndicator(close, window=50).ema_indicator()
     df['rsi'] = RSIIndicator(close, window=14).rsi()
+    df['atr'] = high - low # Sederhana ATR
     
-    rsi = df['rsi'].iloc[-1]; ema200 = df['ema200'].iloc[-1]
-    trend = "UPTREND" if curr > ema200 else "DOWNTREND"
+    rsi = df['rsi'].iloc[-1]
+    ema200 = df['ema200'].iloc[-1]
     
-    res = None; ai_msg = "-"
-    
-    if "MODE 1" in mode: # Agresif
-        if rsi < 35:
-            ai_msg = ask_ai_groq(symbol, curr, rsi, trend, "SCALPING/REBOUND", sent_text)
-            res = {"type": "🔥 AGRESIF", "reason": "RSI Oversold"}
+    # RULE: Tren Naik (Aman) & Diskon (RSI < 55)
+    if curr > ema200 and rsi < 55:
+        # Tentukan Stop Loss (Low candle sebelumnya atau 3% di bawah harga)
+        sl_price = curr * 0.95 
+        
+        # Hitung Uang
+        buy_size = calculate_position(curr, sl_price, saldo_usdt, resiko_persen)
+        
+        # Cek Volume (Bahaya Exit Liquidity)
+        # Estimasi volume 24jam terakhir (jumlahkan 24 candle terakhir)
+        vol_24h_usdt = (df['vol'] * df['close']).rolling(24).sum().iloc[-1]
+        
+        # Jangan beli lebih dari 1% volume harian (Supaya tidak jadi paus nyangkut)
+        max_safe_buy = vol_24h_usdt * 0.01 
+        
+        warning = ""
+        if buy_size > max_safe_buy:
+            buy_size = max_safe_buy # Turunkan ukuran beli
+            warning = "⚠️ Ukuran dikecilkan karena volume koin sepi (Bahaya nyangkut!)"
             
-    elif "MODE 2" in mode: # Moderat
-        if curr > ema200 and rsi < 55:
-            ai_msg = ask_ai_groq(symbol, curr, rsi, trend, "SWING/TREND", sent_text)
-            res = {"type": "🧠 MODERAT", "reason": "Trend Pullback"}
-            
-    elif "MODE 3" in mode: # Klasik
-        if curr > ema200 and curr > df['ema50'].iloc[-1] and rsi < 45:
-            res = {"type": "🛡️ SENTINEL", "reason": "Technical Only"}
-            ai_msg = "Non-Aktif"
-
-    if res:
-        res.update({"symbol": symbol, "entry": curr, "tp": curr*(1+target_pct/100), "rsi": rsi, "ai": ai_msg, "df": df, "src": src})
-        return res
+        return {
+            "symbol": symbol, "entry": curr, "sl": sl_price,
+            "tp1": curr * 1.05, "tp2": curr * 1.10, "tp3": curr * 1.20,
+            "size": buy_size, "rsi": rsi, "src": src, "df": df, "warn": warning,
+            "vol": vol_24h_usdt
+        }
     return None
 
-# --- UI DISPLAY ---
-s_val, s_txt = get_social_sentiment()
-st.metric("Sentimen Pasar", f"{s_val}/100", s_txt)
-st.info(f"🚀 ENGINE: **{mode_operasi}**")
-
+# --- TAMPILAN UTAMA ---
 ph = st.empty(); res_ph = st.empty()
 
 if run_sentinel:
-    if "MODE 3" not in mode_operasi and not groq_key:
-        st.error("⚠️ Masukkan Groq API Key Dulu!")
-    else:
-        while True:
-            batch = random.sample(WATCHLIST, 5)
-            with ph.container():
-                st.write(f"Scanning {', '.join(batch)} ...")
-                for coin in batch:
-                    r = analyze(coin, mode_operasi, s_val, s_txt)
-                    time.sleep(0.5) # Groq cepat, delay bisa dikurangi
-                    if r:
-                        # Audio
-                        st.markdown("""<audio autoplay><source src="https://www.soundjay.com/buttons/sounds/button-37.mp3" type="audio/mpeg"></audio>""", unsafe_allow_html=True)
-                        with res_ph.container():
-                            st.success(f"🚨 **SINYAL: {r['symbol']}**")
-                            if "MODE 3" not in mode_operasi:
-                                st.warning(f"🤖 **Analisa LLaMA 3:** {r['ai']}")
+    while True:
+        batch = random.sample(WATCHLIST, 5)
+        with ph.container():
+            st.info(f"🔄 Menghitung Risiko: {', '.join(batch)} ...")
+            
+            for coin in batch:
+                res = analyze_pure_math(coin)
+                time.sleep(0.5)
+                
+                if res:
+                    st.markdown("""<audio autoplay><source src="https://www.soundjay.com/buttons/sounds/button-37.mp3" type="audio/mpeg"></audio>""", unsafe_allow_html=True)
+                    
+                    with res_ph.container():
+                        st.success(f"💎 **REKOMENDASI BELI: {res['symbol']}**")
+                        
+                        if res['warn']:
+                            st.warning(res['warn'])
+                        
+                        # BAGIAN PENTING: STRATEGI UANG
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("💵 TOTAL BELI (USDT)", f"${res['size']:.2f}", f"Rp {res['size']*kurs_usd:,.0f}")
+                        c2.metric("🎯 ENTRY PRICE", f"${res['entry']:.5f}")
+                        c3.metric("🛑 STOP LOSS (Wajib)", f"${res['sl']:.5f}", "-5%")
+                        
+                        # STRATEGI LAYERING
+                        with st.expander("📉 Strategi Jaring (Anti-Pucuk)", expanded=True):
+                            st.write(f"Jangan beli ${res['size']:.2f} sekaligus! Pasang antrian (Limit Order):")
+                            col_a, col_b, col_c = st.columns(3)
                             
-                            c1, c2 = st.columns(2)
-                            c1.metric("Entry", f"${r['entry']:.5f}", f"RSI: {r['rsi']:.1f}")
-                            c2.metric("Target", f"${r['tp']:.5f}", f"+{target_pct}%")
+                            # Jaring 1: 30% dana di harga sekarang
+                            amt1 = res['size'] * 0.30
+                            col_a.info(f"**Jaring 1 (Sekarang)**\n\nBeli: ${amt1:.2f}\nHarga: Market")
                             
-                            fig = go.Figure()
-                            d = r['df']
-                            fig.add_trace(go.Candlestick(x=d.index, open=d['open'], high=d['high'], low=d['low'], close=d['close']))
-                            fig.add_trace(go.Scatter(x=d.index, y=d['ema200'], line=dict(color='orange'), name='EMA 200'))
-                            st.plotly_chart(fig, use_container_width=True)
-                            st.stop()
-            time.sleep(3)
+                            # Jaring 2: 30% dana di harga diskon 2%
+                            amt2 = res['size'] * 0.30
+                            price2 = res['entry'] * 0.98
+                            col_b.warning(f"**Jaring 2 (-2%)**\n\nBeli: ${amt2:.2f}\nHarga: ${price2:.5f}")
+                            
+                            # Jaring 3: 40% dana di harga diskon 4%
+                            amt3 = res['size'] * 0.40
+                            price3 = res['entry'] * 0.96
+                            col_c.error(f"**Jaring 3 (-4%)**\n\nBeli: ${amt3:.2f}\nHarga: ${price3:.5f}")
+                        
+                        st.caption(f"Volume 24 Jam: ${res['vol']:,.0f} | Sumber: {res['src']}")
+                        
+                        # Grafik
+                        fig = go.Figure()
+                        d = res['df']
+                        fig.add_trace(go.Candlestick(x=d.index, open=d['open'], high=d['high'], low=d['low'], close=d['close']))
+                        fig.add_trace(go.Scatter(x=d.index, y=d['ema200'], line=dict(color='blue'), name='EMA 200 (Tren)'))
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        st.stop() # Berhenti biar user bisa baca hitungannya
+        time.sleep(2)
 else:
-    ph.info("Siap Meronda. Masukkan Key & Klik Aktifkan.")
+    ph.info("Masukkan Saldo USDT di kiri, lalu centang **AKTIFKAN POS RONDA**.")
