@@ -2,7 +2,7 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import ccxt
-import requests
+import requests # Kita pakai jalur HTTP standar
 import plotly.graph_objects as go
 from ta.trend import EMAIndicator
 from ta.momentum import RSIIndicator
@@ -11,8 +11,8 @@ import time
 import random
 
 # --- KONFIGURASI ---
-st.set_page_config(page_title="AI TRINITY: AUTO-DETECT", layout="wide")
-st.title("🎛️ AI TRINITY: Auto-Detect Model")
+st.set_page_config(page_title="AI TRINITY: GROQ LLaMA 3", layout="wide")
+st.title("🎛️ AI TRINITY: LLaMA 3 Edition (Super Fast)")
 
 # --- DATABASE KOIN ---
 WATCHLIST = [
@@ -81,47 +81,36 @@ exchanges = {
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.header("🎮 PILIH MODE SCANNER")
+    st.header("🎮 MODE SCANNER")
     mode_operasi = st.radio(
-        "Pilih Strategi:",
-        (
-            "🔥 MODE 1: Super Agresif (+Gemini)",
-            "🧠 MODE 2: Moderat Cerdas (+Gemini)",
-            "🛡️ MODE 3: Sentinel Klasik (Tanpa AI)"
-        )
+        "Strategi:",
+        ("🔥 MODE 1: Super Agresif", "🧠 MODE 2: Moderat Cerdas", "🛡️ MODE 3: Sentinel Klasik")
     )
     
     st.divider()
     if "MODE 3" not in mode_operasi:
-        st.header("🧠 Otak Gemini")
-        gemini_key = st.text_input("Gemini API Key (Wajib Baru)", type="password")
+        st.header("🧠 OTAK AI (GROQ)")
+        st.caption("Dapatkan key di console.groq.com (Gratis & Cepat)")
+        groq_key = st.text_input("Groq API Key (gsk_...)", type="password")
         
-        # --- FITUR DEBUGGING BARU ---
-        if st.button("🛠️ TES KONEKSI GEMINI"):
-            if not gemini_key:
-                st.error("Masukkan API Key dulu!")
+        if st.button("🛠️ TES KONEKSI AI"):
+            if not groq_key:
+                st.error("Isi Key dulu bos!")
             else:
                 try:
-                    # Cek list model yang tersedia untuk Key ini
-                    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={gemini_key}"
-                    resp = requests.get(url)
-                    if resp.status_code == 200:
-                        models = resp.json().get('models', [])
-                        valid_models = [m['name'] for m in models if 'generateContent' in m['supportedGenerationMethods']]
-                        st.success(f"✅ KONEKSI SUKSES! {len(valid_models)} Model ditemukan.")
-                        with st.expander("Lihat Model Tersedia"):
-                            st.write(valid_models)
-                    else:
-                        st.error(f"❌ KONEKSI GAGAL: {resp.status_code}")
-                        st.write(resp.text)
-                except Exception as e:
-                    st.error(f"Error Jaringan: {str(e)}")
+                    r = requests.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+                        json={"model": "llama3-70b-8192", "messages": [{"role": "user", "content": "hi"}]}
+                    )
+                    if r.status_code == 200: st.success("✅ AI LLaMA 3 SIAP TEMPUR!")
+                    else: st.error(f"❌ Gagal: {r.status_code} - {r.text}")
+                except Exception as e: st.error(f"Error: {e}")
     else:
-        gemini_key = None
-        st.info("ℹ️ Mode 3 berjalan murni teknikal.")
+        groq_key = None
 
     st.divider()
-    st.header("🎛️ Kontrol")
+    st.header("🎛️ KONTROL")
     run_sentinel = st.checkbox("🔴 AKTIFKAN POS RONDA", value=False)
     target_pct = st.slider("Target Cuan (%)", 2.0, 50.0, 5.0)
     kurs_usd = st.number_input("Kurs USD", value=16200)
@@ -129,176 +118,139 @@ with st.sidebar:
 # --- FUNGSI SENTIMEN ---
 def get_social_sentiment():
     try:
-        url = "https://api.alternative.me/fng/"
-        response = requests.get(url)
-        data = response.json()
-        return int(data['data'][0]['value']), data['data'][0]['value_classification']
-    except:
-        return 50, "Neutral"
+        r = requests.get("https://api.alternative.me/fng/")
+        d = r.json()
+        return int(d['data'][0]['value']), d['data'][0]['value_classification']
+    except: return 50, "Neutral"
 
-# --- FUNGSI AUTO-DETECT MODEL GEMINI ---
-def ask_gemini_smart(symbol, price, rsi, trend_status, mode, sentiment_text):
-    if not gemini_key: return "⚠️ API Key Kosong"
+# --- FUNGSI ASK AI (GROQ LLaMA 3) ---
+def ask_ai_groq(symbol, price, rsi, trend, mode, sentiment):
+    if not groq_key: return "⚠️ Pasang API Key Groq"
     
-    # 1. Tentukan Pesan Prompt
-    prompt_text = f"""
-    Act as Crypto Analyst. 
-    Coin: {symbol}, Price: ${price}, RSI: {rsi:.1f}, Trend: {trend_status}.
-    Sentiment: {sentiment_text}. Mode: {mode}.
-    Question: Is this a good entry? Answer YES/NO and short reason.
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"}
+    
+    prompt = f"""
+    Act as a Senior Crypto Scalper.
+    Coin: {symbol}, Price: ${price}, RSI: {rsi:.1f}, Trend: {trend}.
+    Market Sentiment: {sentiment}. Strategy Mode: {mode}.
+    
+    Is this a valid entry? Answer with YES or NO and a very short reason (max 1 sentence).
     """
-    payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
-    headers = {'Content-Type': 'application/json'}
-
-    # 2. DAFTAR MODEL YANG AKAN DICOBA (Urutan Prioritas)
-    # Kita coba model Flash terbaru, lalu Pro, lalu fallback
-    models_to_try = [
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-pro",
-        "gemini-pro"
-    ]
     
-    last_error = ""
-
-    # 3. LOOPING "TEMBAK" SEMUA MODEL
-    for model_name in models_to_try:
-        # Gunakan Endpoint v1beta (Standar saat ini)
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={gemini_key}"
-        
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=10)
-            
-            if response.status_code == 200:
-                # BERHASIL! Ambil jawaban dan keluar dari fungsi
-                result = response.json()
-                try:
-                    return result['candidates'][0]['content']['parts'][0]['text']
-                except:
-                    return "Gemini Error: Format Jawaban Aneh"
-            else:
-                # Gagal di model ini, simpan error dan lanjut ke model berikutnya
-                last_error = f"{model_name}: {response.status_code}"
-                continue 
-                
-        except Exception as e:
-            last_error = str(e)
-            continue
-
-    return f"Gagal Semua Model (Cek Tombol Tes Koneksi): {last_error}"
+    payload = {
+        "model": "llama3-70b-8192", # Model LLaMA 3 yang sangat cepat
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.5,
+        "max_tokens": 50
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=5)
+        if response.status_code == 200:
+            return response.json()['choices'][0]['message']['content']
+        else:
+            return f"Error AI: {response.status_code}"
+    except Exception as e:
+        return f"Koneksi AI Putus: {str(e)}"
 
 # --- FUNGSI DATA ---
 def get_data(symbol):
     pair = symbol.replace("/IDR", "/USDT")
-    df = None
-    source = ""
+    df = None; source = ""
     for name, exc in exchanges.items():
         try:
             bars = exc.fetch_ohlcv(pair, timeframe='1h', limit=100)
             if bars:
-                df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
+                df = pd.DataFrame(bars, columns=['time','open','high','low','close','vol'])
                 df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=7)
                 df.set_index('time', inplace=True)
-                source = name.upper()
-                break
+                source = name.upper(); break
         except: continue
     
-    if df is None: # Backup
+    if df is None: # Backup Yahoo
         try:
-            yf_sym = pair.replace("/", "-").replace("USDT", "USD")
-            data_yf = yf.download(yf_sym, period='5d', interval='1h', progress=False)
-            if len(data_yf) > 20:
-                if isinstance(data_yf.columns, pd.MultiIndex): data_yf.columns = data_yf.columns.droplevel(1)
-                df = data_yf[['Open', 'High', 'Low', 'Close', 'Volume']]
-                df.columns = ['open', 'high', 'low', 'close', 'vol']
+            d = yf.download(pair.replace("/","-").replace("USDT","USD"), period='5d', interval='1h', progress=False)
+            if len(d) > 20:
+                if isinstance(d.columns, pd.MultiIndex): d.columns = d.columns.droplevel(1)
+                df = d[['Open','High','Low','Close','Volume']]
+                df.columns = ['open','high','low','close','vol']
                 df.index = df.index + timedelta(hours=7)
                 source = "Yahoo"
         except: pass
     return df, source
 
-# --- ANALISA UTAMA ---
-def analyze_market(symbol, mode_choice, sent_idx, sent_text):
-    df, source = get_data(symbol)
+# --- ANALISA CORE ---
+def analyze(symbol, mode, sent_idx, sent_text):
+    df, src = get_data(symbol)
     if df is None: return None
     
-    close = df['close']
-    curr = close.iloc[-1]
+    close = df['close']; curr = close.iloc[-1]
+    df['ema200'] = EMAIndicator(close, window=200).ema_indicator()
+    df['ema50'] = EMAIndicator(close, window=50).ema_indicator()
+    df['rsi'] = RSIIndicator(close, window=14).rsi()
     
-    df['ema200'] = EMAIndicator(close=close, window=200).ema_indicator()
-    df['ema50'] = EMAIndicator(close=close, window=50).ema_indicator()
-    df['rsi'] = RSIIndicator(close=close, window=14).rsi()
-    
-    rsi = df['rsi'].iloc[-1]
-    ema200 = df['ema200'].iloc[-1]
+    rsi = df['rsi'].iloc[-1]; ema200 = df['ema200'].iloc[-1]
     trend = "UPTREND" if curr > ema200 else "DOWNTREND"
     
-    res = None
-    gemini_msg = "-"
+    res = None; ai_msg = "-"
     
-    # MODE 1
-    if "MODE 1" in mode_choice:
+    if "MODE 1" in mode: # Agresif
         if rsi < 35:
-            gemini_msg = ask_gemini_smart(symbol, curr, rsi, trend, "AGRESIF", sent_text)
+            ai_msg = ask_ai_groq(symbol, curr, rsi, trend, "SCALPING/REBOUND", sent_text)
             res = {"type": "🔥 AGRESIF", "reason": "RSI Oversold"}
-
-    # MODE 2
-    elif "MODE 2" in mode_choice:
+            
+    elif "MODE 2" in mode: # Moderat
         if curr > ema200 and rsi < 55:
-            gemini_msg = ask_gemini_smart(symbol, curr, rsi, trend, "MODERAT", sent_text)
-            res = {"type": "🧠 MODERAT", "reason": "Uptrend + Diskon"}
-
-    # MODE 3
-    elif "MODE 3" in mode_choice:
+            ai_msg = ask_ai_groq(symbol, curr, rsi, trend, "SWING/TREND", sent_text)
+            res = {"type": "🧠 MODERAT", "reason": "Trend Pullback"}
+            
+    elif "MODE 3" in mode: # Klasik
         if curr > ema200 and curr > df['ema50'].iloc[-1] and rsi < 45:
-            res = {"type": "🛡️ SENTINEL", "reason": "Pure Technical Setup"}
-            gemini_msg = "Non-Aktif"
+            res = {"type": "🛡️ SENTINEL", "reason": "Technical Only"}
+            ai_msg = "Non-Aktif"
 
     if res:
-        res.update({
-            "symbol": symbol, "entry": curr, 
-            "tp": curr * (1 + target_pct/100),
-            "rsi": rsi, "gemini": gemini_msg, "df": df, "source": source
-        })
+        res.update({"symbol": symbol, "entry": curr, "tp": curr*(1+target_pct/100), "rsi": rsi, "ai": ai_msg, "df": df, "src": src})
         return res
-        
     return None
 
-# --- UI UTAMA ---
-sent_val, sent_text = get_social_sentiment()
-st.metric("Sentimen Pasar (Fear/Greed)", f"{sent_val}/100", sent_text)
-st.info(f"🚀 SEDANG MENJALANKAN: **{mode_operasi}**")
+# --- UI DISPLAY ---
+s_val, s_txt = get_social_sentiment()
+st.metric("Sentimen Pasar", f"{s_val}/100", s_txt)
+st.info(f"🚀 ENGINE: **{mode_operasi}**")
 
-monitor_ph = st.empty()
-result_ph = st.empty()
+ph = st.empty(); res_ph = st.empty()
 
 if run_sentinel:
-    if "MODE 3" not in mode_operasi and not gemini_key:
-        st.error("⚠️ API Key Gemini WAJIB diisi untuk Mode 1 & 2!")
+    if "MODE 3" not in mode_operasi and not groq_key:
+        st.error("⚠️ Masukkan Groq API Key Dulu!")
     else:
         while True:
             batch = random.sample(WATCHLIST, 5)
-            with monitor_ph.container():
+            with ph.container():
                 st.write(f"Scanning {', '.join(batch)} ...")
                 for coin in batch:
-                    res = analyze_market(coin, mode_operasi, sent_val, sent_text)
-                    time.sleep(1)
-                    if res:
-                        audio_html = """<audio autoplay><source src="https://www.soundjay.com/buttons/sounds/button-37.mp3" type="audio/mpeg"></audio>"""
-                        st.markdown(audio_html, unsafe_allow_html=True)
-                        with result_ph.container():
-                            st.success(f"🚨 **SINYAL DITEMUKAN: {res['symbol']}**")
+                    r = analyze(coin, mode_operasi, s_val, s_txt)
+                    time.sleep(0.5) # Groq cepat, delay bisa dikurangi
+                    if r:
+                        # Audio
+                        st.markdown("""<audio autoplay><source src="https://www.soundjay.com/buttons/sounds/button-37.mp3" type="audio/mpeg"></audio>""", unsafe_allow_html=True)
+                        with res_ph.container():
+                            st.success(f"🚨 **SINYAL: {r['symbol']}**")
                             if "MODE 3" not in mode_operasi:
-                                st.info(f"🤖 **Kata Gemini:** {res['gemini']}")
+                                st.warning(f"🤖 **Analisa LLaMA 3:** {r['ai']}")
+                            
                             c1, c2 = st.columns(2)
-                            c1.metric("BELI", f"${res['entry']:.5f}", f"RSI: {res['rsi']:.1f}")
-                            c2.metric("JUAL", f"${res['tp']:.5f}", f"+{target_pct}%")
+                            c1.metric("Entry", f"${r['entry']:.5f}", f"RSI: {r['rsi']:.1f}")
+                            c2.metric("Target", f"${r['tp']:.5f}", f"+{target_pct}%")
                             
                             fig = go.Figure()
-                            df = res['df']
-                            fig.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close']))
-                            fig.add_trace(go.Scatter(x=df.index, y=df['ema200'], line=dict(color='orange'), name='EMA 200'))
+                            d = r['df']
+                            fig.add_trace(go.Candlestick(x=d.index, open=d['open'], high=d['high'], low=d['low'], close=d['close']))
+                            fig.add_trace(go.Scatter(x=d.index, y=d['ema200'], line=dict(color='orange'), name='EMA 200'))
                             st.plotly_chart(fig, use_container_width=True)
                             st.stop()
-            time.sleep(5)
+            time.sleep(3)
 else:
-    monitor_ph.info("Pilih Mode di menu kiri, lalu centang **AKTIFKAN POS RONDA**.")
+    ph.info("Siap Meronda. Masukkan Key & Klik Aktifkan.")
