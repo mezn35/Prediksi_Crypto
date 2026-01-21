@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import ccxt
 import yfinance as yf
+import requests
 import plotly.graph_objects as go
 from ta.trend import EMAIndicator
 from ta.momentum import RSIIndicator
@@ -11,11 +12,11 @@ from datetime import datetime, timedelta
 import time
 import random
 
-# --- KONFIGURASI ---
-st.set_page_config(page_title="CRYPTO COMMANDER", layout="wide")
-st.title("🛡️ CRYPTO COMMANDER: Money Manager + USDT Radar")
+# --- KONFIGURASI HALAMAN ---
+st.set_page_config(page_title="CRYPTO COMMANDER PRO", layout="wide")
+st.title("🛡️ CRYPTO COMMANDER: Paket Lengkap (No Error)")
 
-# --- DATABASE KOIN MICIN ---
+# --- DATABASE KOIN (FULL LIST) ---
 WATCHLIST = [
     "HEI/USDT", "BROCCOLI714/USDT", "PENGU/USDT", "BIO/USDT", "A2Z/USDT", 
     "VELODROME/USDT", "1000CHEEMS/USDT", "TURTLE/USDT", "MDT/USDT", "ACA/USDT", 
@@ -78,73 +79,85 @@ exchanges = {
     'binance': ccxt.binance({'enableRateLimit': True}),
     'gateio': ccxt.gateio({'enableRateLimit': True}),
     'mexc': ccxt.mexc({'enableRateLimit': True}),
-    'tokocrypto': ccxt.tokocrypto({'enableRateLimit': True}), # KHUSUS USDT/BIDR
+    'tokocrypto': ccxt.tokocrypto({'enableRateLimit': True}),
 }
 
-# --- SIDEBAR: USDT RADAR & MONEY MANAGER ---
+# --- SIDEBAR: SEMUA KONTROL ADA DI SINI ---
 with st.sidebar:
-    st.title("🇮🇩 USDT RADAR")
-    usdt_placeholder = st.empty() # Tempat update harga USDT
+    # 1. USDT RADAR
+    st.header("🇮🇩 USDT RADAR")
+    usdt_placeholder = st.empty()
     
     st.divider()
+
+    # 2. STRATEGI SELECTOR (FITUR LAMA DIKEMBALIKAN)
+    st.header("🎮 MODE STRATEGI")
+    mode_operasi = st.radio(
+        "Pilih Gaya Trading:",
+        (
+            "🔥 AGRESIF (Serok Bawah/Rebound)",
+            "🧠 MODERAT (Tren Sehat)",
+            "🛡️ KONSERVATIF (Super Aman)"
+        )
+    )
+
+    st.divider()
     
-    st.header("💰 Dompet & Risiko")
-    saldo_usdt = st.number_input("Total Saldo USDT Anda", value=100.0, step=10.0)
-    resiko_persen = st.slider("Siap Rugi per Trade (%)", 1.0, 10.0, 2.0)
+    # 3. MONEY MANAGEMENT
+    st.header("💰 MANAJEMEN RISIKO")
+    saldo_usdt = st.number_input("Total Saldo USDT", value=100.0, step=10.0)
+    resiko_persen = st.slider("Risiko per Trade (%)", 1.0, 10.0, 2.0)
     st.info(f"Maksimal Rugi: **${saldo_usdt * resiko_persen / 100:.2f}**")
     
     st.divider()
     
-    st.header("🎛️ Kontrol")
+    # 4. START BUTTON
+    st.header("🎛️ KONTROL")
     run_sentinel = st.checkbox("🔴 AKTIFKAN POS RONDA", value=False)
+    target_pct = st.slider("Target Profit (%)", 2.0, 50.0, 5.0)
 
-# --- FUNGSI CEK HARGA USDT/IDR (TOKO) ---
+# --- FUNGSI 1: CEK SENTIMEN (EXTERNAL DATA) ---
+def get_social_sentiment():
+    try:
+        url = "https://api.alternative.me/fng/"
+        response = requests.get(url, timeout=5)
+        data = response.json()
+        return int(data['data'][0]['value']), data['data'][0]['value_classification']
+    except:
+        return 50, "Neutral"
+
+# --- FUNGSI 2: CEK USDT (TOKO) ---
 def check_usdt_rate():
     try:
-        # Ambil data USDT/BIDR dari Tokocrypto (Paling akurat buat orang Indo)
         ticker = exchanges['tokocrypto'].fetch_ticker('USDT/BIDR')
         current_price = ticker['last']
         
-        # Ambil data historis 100 candle 4 jam untuk hitung Bollinger Bands
-        bars = exchanges['tokocrypto'].fetch_ohlcv('USDT/BIDR', timeframe='4h', limit=100)
+        # Analisa BB
+        bars = exchanges['tokocrypto'].fetch_ohlcv('USDT/BIDR', timeframe='4h', limit=50)
         df = pd.DataFrame(bars, columns=['time','open','high','low','close','vol'])
         
-        # Indikator BB
         bb = BollingerBands(close=df['close'], window=20, window_dev=2)
-        df['bb_high'] = bb.bollinger_hband()
         df['bb_low'] = bb.bollinger_lband()
         df['rsi'] = RSIIndicator(close=df['close'], window=14).rsi()
         
-        rsi = df['rsi'].iloc[-1]
-        bb_high = df['bb_high'].iloc[-1]
-        bb_low = df['bb_low'].iloc[-1]
-        
-        # LOGIKA SARAN BELI USDT
-        status = "NETRAL"
-        color = "blue"
-        
-        if current_price <= bb_low or rsi < 35:
-            status = "✅ DISKON! BELI USDT SKRG"
-            color = "green"
-        elif current_price >= bb_high or rsi > 65:
-            status = "⛔ MAHAL! JANGAN BELI USDT"
-            color = "red"
-        else:
-            status = "⚖️ HARGA WAJAR"
-            color = "orange"
+        status = "NETRAL (WAIT)"; color = "orange"
+        if current_price <= df['bb_low'].iloc[-1] or df['rsi'].iloc[-1] < 40:
+            status = "✅ DISKON (BUY)"; color = "green"
+        elif df['rsi'].iloc[-1] > 65:
+            status = "⛔ MAHAL (DONT BUY)"; color = "red"
             
         return current_price, status, color
     except:
         return 16200, "Offline", "grey"
 
-# --- FUNGSI DATA ---
+# --- FUNGSI 3: DATA ENGINE ---
 def get_data(symbol):
     pair = symbol.replace("/IDR", "/USDT")
     df = None; source = ""
     for name, exc in exchanges.items():
-        if name == 'tokocrypto': continue # Skip toko utk altcoin global biar cepat
+        if name == 'tokocrypto': continue
         try:
-            bars = exc.fetch_ohlcv(pair, timeframe='1h', limit=200)
+            bars = exc.fetch_ohlcv(pair, timeframe='1h', limit=100)
             if bars:
                 df = pd.DataFrame(bars, columns=['time','open','high','low','close','vol'])
                 df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=7)
@@ -152,6 +165,7 @@ def get_data(symbol):
                 source = name.upper(); break
         except: continue
     
+    # Fallback Yahoo
     if df is None:
         try:
             d = yf.download(pair.replace("/","-").replace("USDT","USD"), period='5d', interval='1h', progress=False)
@@ -164,97 +178,131 @@ def get_data(symbol):
         except: pass
     return df, source
 
-# --- FUNGSI MONEY MANAGER ---
-def calculate_position(entry_price, stop_loss_price, total_equity, risk_pct):
-    risk_amount = total_equity * (risk_pct / 100)
-    sl_distance_pct = abs(entry_price - stop_loss_price) / entry_price
-    if sl_distance_pct == 0: return 0
-    position_size_usdt = risk_amount / sl_distance_pct
-    if position_size_usdt > (total_equity * 0.5): position_size_usdt = total_equity * 0.5
-    return position_size_usdt
+# --- FUNGSI 4: MONEY MANAGER ---
+def calculate_position(entry, sl, equity, risk):
+    risk_amt = equity * (risk / 100)
+    dist = abs(entry - sl) / entry
+    if dist == 0: return 0
+    size = risk_amt / dist
+    if size > (equity * 0.5): size = equity * 0.5 # Max 50% saldo
+    return size
 
-# --- ANALISA UTAMA ---
-def analyze_pure_math(symbol):
+# --- CORE LOGIC: ANALISA MATEMATIKA (3 MODE) ---
+def analyze_market(symbol, mode):
     df, src = get_data(symbol)
     if df is None: return None
     
     close = df['close']; curr = close.iloc[-1]
     
+    # Indikator
     df['ema200'] = EMAIndicator(close, window=200).ema_indicator()
     df['ema50'] = EMAIndicator(close, window=50).ema_indicator()
     df['rsi'] = RSIIndicator(close, window=14).rsi()
     
     rsi = df['rsi'].iloc[-1]
     ema200 = df['ema200'].iloc[-1]
+    ema50 = df['ema50'].iloc[-1]
     
-    if curr > ema200 and rsi < 55:
-        sl_price = curr * 0.95 
-        buy_size = calculate_position(curr, sl_price, saldo_usdt, resiko_persen)
+    signal = False
+    reason = ""
+    
+    # === LOGIKA 1: AGRESIF (Serok Bawah) ===
+    if "AGRESIF" in mode:
+        # Cari yang oversold parah (RSI < 30) tanpa peduli tren
+        if rsi < 30:
+            signal = True
+            reason = f"RSI Oversold Ekstrem ({rsi:.1f})"
+
+    # === LOGIKA 2: MODERAT (Tren Sehat) ===
+    elif "MODERAT" in mode:
+        # Uptrend (Harga > EMA200) + Diskon (RSI < 55)
+        if curr > ema200 and rsi < 55:
+            signal = True
+            reason = "Uptrend + Koreksi Wajar"
+
+    # === LOGIKA 3: KONSERVATIF (Super Aman) ===
+    elif "KONSERVATIF" in mode:
+        # Strong Uptrend (Harga > EMA200 & EMA50) + RSI Murah (< 45)
+        if curr > ema200 and curr > ema50 and rsi < 45:
+            signal = True
+            reason = "Strong Uptrend Perfect Setup"
+
+    if signal:
+        sl_price = curr * 0.95 # SL 5%
+        size = calculate_position(curr, sl_price, saldo_usdt, resiko_persen)
         
-        # Volume Check
-        vol_24h_usdt = (df['vol'] * df['close']).rolling(24).sum().iloc[-1]
-        max_safe_buy = vol_24h_usdt * 0.01 
-        
+        # Volume Warning
+        vol_usdt = (df['vol'] * df['close']).rolling(24).sum().iloc[-1]
         warn = ""
-        if buy_size > max_safe_buy:
-            buy_size = max_safe_buy
-            warn = "⚠️ Volume Sepi! Size dikecilkan otomatis."
-            
+        if size > (vol_usdt * 0.01):
+            size = vol_usdt * 0.01
+            warn = "⚠️ Volume Kecil! Size dikurangi."
+
         return {
-            "symbol": symbol, "entry": curr, "sl": sl_price,
-            "tp1": curr * 1.05, "size": buy_size, "src": src, "df": df, "warn": warn, "vol": vol_24h_usdt
+            "symbol": symbol, "entry": curr, "sl": sl_price, "tp": curr*(1+target_pct/100),
+            "size": size, "src": src, "df": df, "reason": reason, "warn": warn
         }
     return None
 
-# --- UI LOOP ---
+# --- TAMPILAN UTAMA ---
+s_val, s_txt = get_social_sentiment()
+st.metric("Sentimen Pasar (Fear & Greed)", f"{s_val}/100", s_txt)
+st.info(f"🚀 MODE AKTIF: **{mode_operasi}**")
+
 ph = st.empty(); res_ph = st.empty()
 
 if run_sentinel:
     while True:
-        # 1. Update USDT Radar (Sidebar)
-        usdt_price, usdt_status, usdt_color = check_usdt_rate()
+        # 1. Update USDT Radar
+        u_price, u_stat, u_col = check_usdt_rate()
         with usdt_placeholder.container():
-            st.metric("Kurs USDT/IDR (Tokocrypto)", f"Rp {usdt_price:,.0f}")
-            if usdt_color == "green": st.success(usdt_status)
-            elif usdt_color == "red": st.error(usdt_status)
-            else: st.warning(usdt_status)
-            
-        # 2. Scan Micin
+            st.metric("Kurs USDT (Toko)", f"Rp {u_price:,.0f}")
+            if u_col == "green": st.success(u_stat)
+            elif u_col == "red": st.error(u_stat)
+            else: st.warning(u_stat)
+        
+        # 2. Scanning
         batch = random.sample(WATCHLIST, 5)
         with ph.container():
-            st.info(f"🔄 Scanning Koin: {', '.join(batch)} ...")
+            st.write(f"Scanning ({mode_operasi}): {', '.join(batch)} ...")
             
             for coin in batch:
-                res = analyze_pure_math(coin)
+                res = analyze_market(coin, mode_operasi)
                 time.sleep(0.5)
                 
                 if res:
                     st.markdown("""<audio autoplay><source src="https://www.soundjay.com/buttons/sounds/button-37.mp3" type="audio/mpeg"></audio>""", unsafe_allow_html=True)
                     with res_ph.container():
-                        st.success(f"💎 **BELI: {res['symbol']}**")
+                        st.success(f"💎 **SINYAL: {res['symbol']}**")
+                        st.caption(f"Alasan: {res['reason']} | Sumber: {res['src']}")
                         if res['warn']: st.warning(res['warn'])
                         
+                        # Money Management Display
                         c1, c2, c3 = st.columns(3)
                         c1.metric("💵 BELI (USDT)", f"${res['size']:.2f}")
                         c2.metric("🎯 ENTRY", f"${res['entry']:.5f}")
-                        c3.metric("🛑 CUT LOSS", f"${res['sl']:.5f}")
+                        c3.metric("🛑 STOP LOSS", f"${res['sl']:.5f}")
                         
+                        # Layering Strategy
                         with st.expander("📉 Strategi Jaring (Layering)"):
                             c_a, c_b = st.columns(2)
                             c_a.info(f"**Jaring 1 (Market)**: ${res['size']*0.4:.2f}")
                             c_b.warning(f"**Jaring 2 (-3%)**: ${res['size']*0.6:.2f}")
-                        
+                            st.caption("Pasang antrian di dua harga ini untuk hasil maksimal.")
+
+                        # Chart
                         fig = go.Figure()
                         d = res['df']
                         fig.add_trace(go.Candlestick(x=d.index, open=d['open'], high=d['high'], low=d['low'], close=d['close']))
-                        fig.add_trace(go.Scatter(x=d.index, y=d['ema200'], line=dict(color='blue'), name='EMA 200'))
+                        fig.add_trace(go.Scatter(x=d.index, y=d['ema200'], line=dict(color='orange'), name='EMA 200'))
                         st.plotly_chart(fig, use_container_width=True)
-                        st.stop()
-        time.sleep(2)
+                        
+                        st.stop() # Freeze layar
+        time.sleep(3)
 else:
-    ph.info("Masukkan Saldo USDT -> Klik Aktifkan Pos Ronda.")
-    # Preview USDT Radar saat standby
-    usdt_price, usdt_status, usdt_color = check_usdt_rate()
+    ph.info("Siap! Atur Saldo & Mode, lalu klik 'Aktifkan Pos Ronda'.")
+    # Preview USDT saat standby
+    u_price, u_stat, u_col = check_usdt_rate()
     with usdt_placeholder.container():
-        st.metric("Kurs USDT/IDR", f"Rp {usdt_price:,.0f}")
-        st.caption(usdt_status)
+        st.metric("Kurs USDT", f"Rp {u_price:,.0f}")
+        st.caption(u_stat)
