@@ -12,21 +12,23 @@ from datetime import datetime, timedelta
 import time
 import random
 
-# --- KONFIGURASI ---
+# --- KONFIGURASI HALAMAN ---
 st.set_page_config(page_title="CRYPTO COMMANDER PRO", layout="wide")
-st.title("🛡️ CRYPTO COMMANDER: Smart Strategy Edition")
+st.title("🛡️ CRYPTO COMMANDER: Multi-Strategy")
 
-# --- DATABASE KOIN ---
+# --- DATABASE KOIN (UPDATE LENGKAP) ---
+# Saya tambahkan koin-koin dari screenshot Bapak (PUMP, AXL, SXP, HEMI, TURTLE)
 WATCHLIST = [
+    "PUMP/USDT", "AXL/USDT", "SXP/USDT", "HEMI/USDT", "TURTLE/USDT",
     "HEI/USDT", "BROCCOLI714/USDT", "PENGU/USDT", "BIO/USDT", "A2Z/USDT", 
-    "VELODROME/USDT", "1000CHEEMS/USDT", "TURTLE/USDT", "MDT/USDT", "ACA/USDT", 
+    "VELODROME/USDT", "1000CHEEMS/USDT", "MDT/USDT", "ACA/USDT", 
     "COS/USDT", "ACM/USDT", "CHESS/USDT", "DATA/USDT", "NBT/USDT", "CVC/USDT", 
     "ALPINE/USDT", "BEL/USDT", "HOOK/USDT", "NKN/USDT", "QUICK/USDT", "DEGO/USDT", 
     "D/USDT", "IDEX/USDT", "GHST/USDT", "UTK/USDT", "FIO/USDT", "TRU/USDT", 
     "ENSO/USDT", "RDNT/USDT", "MITO/USDT", "DODO/USDT", "BAR/USDT", "VIC/USDT", 
     "EDEN/USDT", "SYN/USDT", "DF/USDT", "TST/USDT", "TKO/USDT", "WAN/USDT", 
     "HAEDAL/USDT", "NFP/USDT", "ADX/USDT", "BMT/USDT", "GTC/USDT", "TUT/USDT", 
-    "TREE/USDT", "INIT/USDT", "SHELL/USDT", "PORTAL/USDT", "HEMI/USDT", "PIVX/USDT", 
+    "TREE/USDT", "INIT/USDT", "SHELL/USDT", "PORTAL/USDT", "PIVX/USDT", 
     "TLM/USDT", "SCR/USDT", "HMSTR/USDT", "A/USDT", "SOLV/USDT", "LUMIA/USDT", 
     "RAD/USDT", "TOWNS/USDT", "ALICE/USDT", "SYS/USDT", "HIGH/USDT", "ATA/USDT", 
     "PHB/USDT", "NTRN/USDT", "MBOX/USDT", "F/USDT", "OGN/USDT", "KERNEL/USDT", 
@@ -82,69 +84,57 @@ exchanges = {
     'tokocrypto': ccxt.tokocrypto({'enableRateLimit': True}),
 }
 
-# --- SIDEBAR: KONTROL PENUH ---
+# --- SIDEBAR ---
 with st.sidebar:
-    st.header("🇮🇩 USDT RADAR (TOKO)")
+    st.header("🇮🇩 USDT RADAR")
     usdt_placeholder = st.empty()
-    
     st.divider()
-    
+
     st.header("🎮 PILIH STRATEGI")
+    # MODE 4 DITAMBAHKAN UNTUK MENANGKAP KOIN PUMPING
     mode_operasi = st.radio(
         "Gaya Trading:",
         (
+            "🚀 MOMENTUM (Kejar Naik/Hype)", # <-- PILIH INI KALAU PASAR HIJAU
             "🔥 AGRESIF (Serok Bawah)",
             "🧠 MODERAT (Tren Sehat)",
             "🛡️ KONSERVATIF (Super Aman)"
         )
     )
-    
+    st.caption("ℹ️ Pilih 'MOMENTUM' untuk menangkap koin yang sedang naik +5% s/d +15%.")
+
     st.divider()
     
     st.header("💰 MANAJEMEN UANG")
     saldo_usdt = st.number_input("Saldo USDT", value=100.0, step=10.0)
     resiko_persen = st.slider("Risiko Rugi (%)", 1.0, 5.0, 2.0)
-    st.info(f"Maksimal Rugi per Koin: **${saldo_usdt * resiko_persen / 100:.2f}**")
+    st.info(f"Maksimal Rugi per Trade: **${saldo_usdt * resiko_persen / 100:.2f}**")
     
     st.divider()
     
-    st.header("🎛️ AKTIVASI")
-    run_sentinel = st.checkbox("🔴 NYALAKAN SCANNER", value=False)
+    st.header("🎛️ KONTROL")
+    run_sentinel = st.checkbox("🔴 AKTIFKAN POS RONDA", value=False)
     target_pct = st.slider("Target Profit (%)", 2.0, 50.0, 5.0)
 
-# --- FUNGSI 1: SENTIMEN ---
-def get_social_sentiment():
-    try:
-        url = "https://api.alternative.me/fng/"
-        response = requests.get(url, timeout=5)
-        data = response.json()
-        return int(data['data'][0]['value']), data['data'][0]['value_classification']
-    except:
-        return 50, "Neutral"
-
-# --- FUNGSI 2: CEK USDT ---
+# --- FUNGSI CEK USDT ---
 def check_usdt_rate():
     try:
         ticker = exchanges['tokocrypto'].fetch_ticker('USDT/BIDR')
         current_price = ticker['last']
-        
         bars = exchanges['tokocrypto'].fetch_ohlcv('USDT/BIDR', timeframe='4h', limit=50)
         df = pd.DataFrame(bars, columns=['time','open','high','low','close','vol'])
-        
         bb = BollingerBands(close=df['close'], window=20, window_dev=2)
         df['bb_low'] = bb.bollinger_lband()
         df['rsi'] = RSIIndicator(close=df['close'], window=14).rsi()
-        
-        status = "NETRAL"; color = "orange"
+        status = "NETRAL (WAIT)"; color = "orange"
         if current_price <= df['bb_low'].iloc[-1] or df['rsi'].iloc[-1] < 40:
-            status = "✅ DISKON (BELI USDT)"; color = "green"
+            status = "✅ DISKON (BUY)"; color = "green"
         elif df['rsi'].iloc[-1] > 65:
-            status = "⛔ MAHAL (JANGAN BELI)"; color = "red"
-            
+            status = "⛔ MAHAL (HOLD)"; color = "red"
         return current_price, status, color
     except: return 16200, "Offline", "grey"
 
-# --- FUNGSI 3: DATA ENGINE ---
+# --- FUNGSI DATA ---
 def get_data(symbol):
     pair = symbol.replace("/IDR", "/USDT")
     df = None; source = ""
@@ -159,7 +149,7 @@ def get_data(symbol):
                 source = name.upper(); break
         except: continue
         
-    if df is None: # Backup
+    if df is None: # Fallback Yahoo
         try:
             d = yf.download(pair.replace("/","-").replace("USDT","USD"), period='5d', interval='1h', progress=False)
             if len(d) > 20:
@@ -171,7 +161,7 @@ def get_data(symbol):
         except: pass
     return df, source
 
-# --- FUNGSI 4: HITUNG UKURAN POSISI (MONEY MANAGEMENT) ---
+# --- FUNGSI MONEY MANAGER ---
 def calculate_position(entry, sl, equity, risk):
     risk_amt = equity * (risk / 100)
     dist = abs(entry - sl) / entry
@@ -180,59 +170,7 @@ def calculate_position(entry, sl, equity, risk):
     if size > (equity * 0.5): size = equity * 0.5
     return size
 
-# --- FUNGSI 5: STRATEGI JARING ADAPTIF (INTI PERMINTAAN BAPAK) ---
-def get_layering_strategy(mode, total_usdt, entry_price):
-    layers = []
-    
-    # KASUS 1: AGRESIF (Harga lagi jatuh, kita tunggu di bawah)
-    if "AGRESIF" in mode:
-        layers.append({
-            "step": "Jaring 1 (Market)",
-            "desc": "Beli Sedikit Dulu",
-            "percent": "30%",
-            "amount": total_usdt * 0.30,
-            "price": "Harga Sekarang",
-            "type": "Market Order"
-        })
-        layers.append({
-            "step": "Jaring 2 (Bawah)",
-            "desc": "Antri di Diskon",
-            "percent": "30%",
-            "amount": total_usdt * 0.30,
-            "price": entry_price * 0.97, # Diskon 3%
-            "type": "Limit Order"
-        })
-        layers.append({
-            "step": "Jaring 3 (Dasar)",
-            "desc": "Tangkap Pisau",
-            "percent": "40%",
-            "amount": total_usdt * 0.40,
-            "price": entry_price * 0.94, # Diskon 6%
-            "type": "Limit Order"
-        })
-
-    # KASUS 2: KONSERVATIF/MODERAT (Harga lagi naik, kejar kereta)
-    else: 
-        layers.append({
-            "step": "Jaring 1 (Market)",
-            "desc": "Amankan Barang",
-            "percent": "60%",
-            "amount": total_usdt * 0.60,
-            "price": "Harga Sekarang",
-            "type": "Market Order"
-        })
-        layers.append({
-            "step": "Jaring 2 (Correction)",
-            "desc": "Jaga-jaga Koreksi",
-            "percent": "40%",
-            "amount": total_usdt * 0.40,
-            "price": entry_price * 0.98, # Diskon 2%
-            "type": "Limit Order"
-        })
-        
-    return layers
-
-# --- ANALISA UTAMA ---
+# --- ANALISA UTAMA (4 MODE) ---
 def analyze_market(symbol, mode):
     df, src = get_data(symbol)
     if df is None: return None
@@ -248,83 +186,106 @@ def analyze_market(symbol, mode):
     
     signal = False; reason = ""
     
-    if "AGRESIF" in mode:
-        if rsi < 30: signal = True; reason = f"RSI Sangat Murah ({rsi:.1f})"
+    # === MODE 1: MOMENTUM (KEJAR KERETA/PUMP) ===
+    # Ini yang Bapak cari untuk koin +10% s/d +20%
+    if "MOMENTUM" in mode:
+        # Syarat: Harga > EMA200 (Wajib Uptrend)
+        # RSI > 50 (Tenaga Beli Kuat) TAPI RSI < 80 (Belum mentok banget)
+        if curr > ema200 and 50 < rsi < 80:
+            # Cek candle terakhir hijau tebal?
+            if close.iloc[-1] > df['open'].iloc[-1]: 
+                signal = True
+                reason = f"🚀 Momentum Kuat! RSI: {rsi:.1f} (Lagi Ngegas)"
+
+    # === MODE 2: AGRESIF (SEROK BAWAH) ===
+    elif "AGRESIF" in mode:
+        if rsi < 30: # Oversold parah
+            signal = True
+            reason = f"📉 Oversold Ekstrem ({rsi:.1f}) - Potensi Mantul"
+
+    # === MODE 3: MODERAT (NORMAL) ===
     elif "MODERAT" in mode:
-        if curr > ema200 and rsi < 55: signal = True; reason = "Uptrend + Koreksi Wajar"
+        if curr > ema200 and rsi < 55: # Uptrend tapi lagi diskon
+            signal = True
+            reason = "✅ Tren Naik + Koreksi Wajar"
+
+    # === MODE 4: KONSERVATIF (AMAN) ===
     elif "KONSERVATIF" in mode:
-        if curr > ema200 and curr > ema50 and rsi < 45: signal = True; reason = "Tren Sangat Kuat"
+        if curr > ema200 and curr > ema50 and rsi < 45:
+            signal = True
+            reason = "🛡️ Setup Perfect (Aman)"
 
     if signal:
-        sl_price = curr * 0.95 
+        # Stop Loss Logis
+        # Kalau Momentum (Lagi naik kencang), SL harus lebih ketat (3%)
+        sl_pct = 0.97 if "MOMENTUM" in mode else 0.95 
+        sl_price = curr * sl_pct
+        
         size = calculate_position(curr, sl_price, saldo_usdt, resiko_persen)
         
-        # Volume Check
+        # Volume Warning
         vol_usdt = (df['vol'] * df['close']).rolling(24).sum().iloc[-1]
         warn = ""
         if size > (vol_usdt * 0.01):
             size = vol_usdt * 0.01
-            warn = "⚠️ Volume Sepi! Jumlah beli dikecilkan paksa."
+            warn = "⚠️ Volume Kecil! Size dikurangi."
 
-        # GENERATE STRATEGI JARING
-        layers = get_layering_strategy(mode, size, curr)
+        # Strategi Jaring
+        layers = []
+        if "MOMENTUM" in mode:
+            # Kalau lagi ngegas, jangan ngantri terlalu bawah, nanti ditinggal
+            layers.append({"step": "Jaring 1 (Market)", "type": "Market", "amount": size*0.5, "price": "Sekarang"})
+            layers.append({"step": "Jaring 2 (Support)", "type": "Limit", "amount": size*0.5, "price": curr*0.98}) # Antri dikit aja -2%
+        else:
+            # Kalau serok bawah, antri lebih dalam
+            layers.append({"step": "Jaring 1 (Market)", "type": "Market", "amount": size*0.3, "price": "Sekarang"})
+            layers.append({"step": "Jaring 2 (Bawah)", "type": "Limit", "amount": size*0.3, "price": curr*0.97})
+            layers.append({"step": "Jaring 3 (Dalam)", "type": "Limit", "amount": size*0.4, "price": curr*0.94})
 
         return {
             "symbol": symbol, "entry": curr, "sl": sl_price, "tp": curr*(1+target_pct/100),
-            "size": size, "src": src, "df": df, "reason": reason, "warn": warn,
-            "layers": layers
+            "size": size, "src": src, "df": df, "reason": reason, "warn": warn, "layers": layers
         }
     return None
 
 # --- UI LOOP ---
-s_val, s_txt = get_social_sentiment()
-st.metric("Sentimen Global (Fear/Greed)", f"{s_val}/100", s_txt)
-st.info(f"🚀 MODE AKTIF: **{mode_operasi}**")
-
 ph = st.empty(); res_ph = st.empty()
 
 if run_sentinel:
     while True:
-        # USDT Check
         u_price, u_stat, u_col = check_usdt_rate()
         with usdt_placeholder.container():
-            st.metric("Kurs USDT (Toko)", f"Rp {u_price:,.0f}")
-            if u_col == "green": st.success(u_stat)
-            elif u_col == "red": st.error(u_stat)
+            st.metric("Kurs USDT", f"Rp {u_price:,.0f}")
+            if u_col=="green": st.success(u_stat); 
+            elif u_col=="red": st.error(u_stat); 
             else: st.warning(u_stat)
         
-        # Scan Coin
         batch = random.sample(WATCHLIST, 5)
         with ph.container():
-            st.write(f"Scanning {', '.join(batch)} ...")
+            st.write(f"Scanning ({mode_operasi}): {', '.join(batch)} ...")
             for coin in batch:
                 res = analyze_market(coin, mode_operasi)
                 time.sleep(0.5)
-                
                 if res:
                     st.markdown("""<audio autoplay><source src="https://www.soundjay.com/buttons/sounds/button-37.mp3" type="audio/mpeg"></audio>""", unsafe_allow_html=True)
                     with res_ph.container():
-                        st.success(f"💎 **SINYAL DITEMUKAN: {res['symbol']}**")
+                        st.success(f"💎 **SINYAL: {res['symbol']}**")
                         st.caption(f"Alasan: {res['reason']} | Sumber: {res['src']}")
                         if res['warn']: st.warning(res['warn'])
                         
-                        # INSTRUKSI JELAS
-                        st.markdown("### 📋 INSTRUKSI BELI (JANGAN SALAH)")
-                        c1, c2 = st.columns(2)
-                        c1.metric("TOTAL UANG DISIAPKAN", f"${res['size']:.2f}")
-                        c2.metric("HARGA STOP LOSS (WAJIB)", f"${res['sl']:.5f}")
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("BELI (USDT)", f"${res['size']:.2f}")
+                        c2.metric("ENTRY", f"${res['entry']:.5f}")
+                        c3.metric("STOP LOSS", f"${res['sl']:.5f}")
                         
-                        # TABEL JARING
-                        st.write("👇 **Ikuti Langkah Ini di Exchange:**")
-                        for layer in res['layers']:
-                            if "Market" in layer['type']:
-                                st.info(f"1️⃣ **{layer['step']}**: Beli **${layer['amount']:.2f}** sekarang juga (Pilih Market Order).")
+                        st.markdown("### 📋 INSTRUKSI EKSEKUSI")
+                        for l in res['layers']:
+                            if l['type'] == "Market":
+                                st.info(f"1️⃣ **{l['step']}**: Beli **${l['amount']:.2f}** sekarang (Market).")
                             else:
-                                st.warning(f"2️⃣ **{layer['step']}**: Pasang antrian beli **${layer['amount']:.2f}** di harga **${layer['price']:.5f}** (Pilih Limit Order).")
+                                st.warning(f"2️⃣ **{l['step']}**: Pasang Limit Buy **${l['amount']:.2f}** di harga **${l['price']:.5f}**.")
                         
-                        st.markdown("---")
-                        st.markdown("### 🎯 INSTRUKSI JUAL")
-                        st.write(f"Pasang Jual (Sell Limit) semua koin di harga: **${res['tp']:.5f}**")
+                        st.write(f"🎯 **TARGET JUAL (TP):** ${res['tp']:.5f}")
                         
                         fig = go.Figure()
                         d = res['df']
@@ -332,10 +293,6 @@ if run_sentinel:
                         fig.add_trace(go.Scatter(x=d.index, y=d['ema200'], line=dict(color='orange'), name='EMA 200'))
                         st.plotly_chart(fig, use_container_width=True)
                         st.stop()
-        time.sleep(3)
+        time.sleep(2)
 else:
-    ph.info("Siap. Klik 'Nyalakan Scanner' untuk memulai.")
-    u_price, u_stat, u_col = check_usdt_rate()
-    with usdt_placeholder.container():
-        st.metric("Kurs USDT", f"Rp {u_price:,.0f}")
-        st.caption(u_stat)
+    ph.info("Pilih Strategi di Kiri -> Aktifkan Pos Ronda.")
