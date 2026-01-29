@@ -14,7 +14,7 @@ import random
 
 # --- KONFIGURASI HALAMAN ---
 st.set_page_config(page_title="Prediksi Crypto", layout="wide")
-st.title("🛡️ Prediksi Crypto")
+st.title("🛡️ Prediksi Crypto By Rezky")
 
 # --- DATABASE KOIN (LENGKAP) ---
 WATCHLIST = [
